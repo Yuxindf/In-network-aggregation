@@ -6,7 +6,7 @@ import datetime
 
 # Set address and port
 serverAddress = "localhost"
-serverPort = 10000
+serverPort = 6001
 
 # Delimiter
 delimiter = "|*|*|"
@@ -96,6 +96,7 @@ def receive():
     result = ""
     try:
         # sock.sendto(("packet num: " + delimiter + str(len(data_list))).encode(), address)
+        sock.settimeout(4)
         result, address = sock.recvfrom(size)
     except:
         print("wrong")
@@ -109,7 +110,7 @@ while 1:
     server_address = (serverAddress, serverPort)
     userInput = input("\nInput file: ")
     try:
-        sock.sendto("start sending".encode(), server_address)
+        sock.sendto("Start sending".encode(), server_address)
         print("Requesting the average in file %s" % userInput)
         unpack(userInput, server_address)
         receive()
