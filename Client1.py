@@ -3,16 +3,18 @@ import hashlib
 import os
 import time
 import datetime
+import random
 
 # Set address and port
-serverAddress = "localhost"
-serverPort = 6001
+serverAddress = "127.0.0.1"
+serverPort = 10000
+proxyAddress = "127.0.0.1"
+proxyPort = 6001
 
 # Delimiter
 delimiter = "|*|*|"
 
 size = 200
-
 
 # Packet class definition
 class Packet:
@@ -28,6 +30,72 @@ class Packet:
         print("Length: %s\nSequence number: %s" % (len(data.split(" ")), self.seqNo))
 
 
+# Three-way handshakes
+def handshake(address):
+    connection_trails_count = 0
+    while 1:
+        print("Connect with Server " + str(serverAddress) + " " + str(serverPort))
+        # first handshake
+        syn = 1
+        seq = random.randrange(0, 10000, 1)
+        try:
+            sock.sendto(("syn" + delimiter + str(syn) + delimiter+ "seq" + delimiter + str(seq)).encode(), address)
+        except:
+            print("Internal Server Error")
+        try:
+            ack, address = sock.recvfrom(size)
+        except:
+            connection_trails_count += 1
+            if connection_trails_count < 5:
+                print("\nConnection time out, retrying")
+                continue
+            else:
+                print("\nMaximum connection trails reached, skipping request\n")
+                return False
+        from_server = ack.decode()
+        # Third handshake
+        if from_server.split(delimiter)[0] == "ack number" and int(from_server.split(delimiter)[1]) == seq + 1 \
+                and from_server.split(delimiter)[2] == "syn" and int(from_server.split(delimiter)[3]) == 1 \
+                and from_server.split(delimiter)[4] == "ack" and int(from_server.split(delimiter)[5]) == 1 \
+                and from_server.split(delimiter)[6] == "seq":
+            ack = 1
+            seq = int(from_server.split(delimiter)[7]) + 1
+            try:
+                sock.sendto(("seq" + delimiter + str(seq) + delimiter + "ack" + delimiter+ str(ack)).encode(), address)
+            except:
+                print("Internal Server Error")
+            return True
+
+
+
+def open_file(file):
+    try:
+        file_read = open(file, 'r')
+        print("Opening file %s" % file)
+        data = file_read.read()
+        data_list = data.split(" ")
+        file_read.close()
+    except:
+        print("Requested file could not be found")
+    return data_list
+
+
+# Send basic information to server
+def send_to_server():
+    pkt = Packet()
+    try:
+        while 1:
+            data_list = open_file()
+            # msg will include operation type, data size...
+            msg = len(data_list)
+            print(msg)
+            pkt.make(msg)
+            packet = str(pkt.checksum) + delimiter + str(pkt.seqNo) + delimiter + str(
+                pkt.index) + delimiter + pkt.msg
+    except:
+        print("Internal server error")
+
+
 # Unpack data
 def unpack(file, address):
     drop_count = 0
@@ -36,17 +104,9 @@ def unpack(file, address):
     pkt = Packet()
 
     try:
-        try:
-            file_read = open(file, 'r')
-            print("Opening file %s" % file)
-            data = file_read.read()
-            data_list = data.split(" ")
-            file_read.close()
-        except:
-            print("Requested file could not be found")
-            return
+        data_list = open_file(file)
 
-        # Send packet number to server
+        # Send packet number to proxy
         while 1:
             send_packet = sock.sendto(("packet num: " + delimiter + str(len(data_list))).encode(), address)
             sock.settimeout(1)
@@ -92,14 +152,14 @@ def unpack(file, address):
 
 
 # Receive result from server
-def receive():
+def result_from_server():
     result = ""
     try:
         # sock.sendto(("packet num: " + delimiter + str(len(data_list))).encode(), address)
         sock.settimeout(4)
         result, address = sock.recvfrom(size)
     except:
-        print("wrong")
+        print("Internal Server Error")
     print(result.decode())
 
 
@@ -108,13 +168,17 @@ while 1:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(10)
     server_address = (serverAddress, serverPort)
+    proxy_address = (proxyAddress, proxyPort)
+    if not handshake(server_address):
+        break
     userInput = input("\nInput file: ")
     try:
-        sock.sendto("Start sending".encode(), server_address)
+        sock.sendto("Start sending".encode(), proxy_address)
         print("Requesting the average in file %s" % userInput)
-        unpack(userInput, server_address)
-        receive()
+        unpack(userInput, proxy_address)
+        result_from_server()
 
     finally:
         print("Closing socket")
         sock.close()
+        break

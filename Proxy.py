@@ -118,7 +118,7 @@ def send_to_server():
         print("Send to server")
         proxy.sendto(packet.encode(), server_address)
     except:
-        print("wrong")
+        print("Internal Server Error")
 
 
 proxy = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -131,6 +131,6 @@ print(host + " Client connect to %s\n" % server_port)
 while 1:
     print("\nWaiting to receive message")
     data, address = proxy.recvfrom(size)
-    # print(data)
+    print(data)
     send_to_server()
 
