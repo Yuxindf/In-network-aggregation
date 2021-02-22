@@ -2,11 +2,13 @@
 import socket
 import hashlib
 import os
+from Packet import Packet
 
-host = 'localhost'
+host = '127.0.0.1'
 proxy_port = 6001  # Proxy Port
 server_port = 10000  # Map to Serer Port
 
+wait_ack_list = []
 data_list = []
 result_list = []
 
@@ -14,6 +16,44 @@ result_list = []
 delimiter = "|*|*|"
 space = "|#|#|"
 size = 200
+
+
+# Receive basic information of client from server and send ACK to server and client
+def client_basic_info():
+    connection_trails_count = 0
+    while 1:
+        try:
+            # receive basic information from server
+            info, address = proxy.recvfrom(size)
+        except:
+            connection_trails_count += 1
+            if connection_trails_count < 5:
+                print("\nConnection time out, retrying")
+                continue
+            else:
+                print("\nMaximum connection trails reached, skipping request\n")
+                return False
+        info = Packet(0, 0, 0, 0, 0, info)
+        info.decode_seq()
+        tmp = info.msg.decode() # info
+        # Send Ack to Server
+        pkt = Packet(0, 0, info.seq + 1, 0, info.seq + 1, 0)
+        pkt.encode_seq()
+        proxy.sendto(pkt.buf, address)
+        # Send Ack to Proxy
+        pkt = Packet(0, 0, 0, 0, int(tmp.split(delimiter)[1]) + 1, 0)
+        pkt.encode_seq()
+        # obtain client address
+        c = tmp.split(delimiter)[0]
+        client_address = str(c[1:-1].split(", ")[0][1:-1])
+        client_port = c[1:-1].split(", ")[1]
+        client = (client_address, int(client_port))
+        proxy.sendto(pkt.buf, client)
+        print("Receive basic information of a client %s " % c)
+        print(tmp.split(delimiter)[3])
+
+    return tmp.split(space)[1]
+
 
 def process_data():
     # The file is to make a backup
@@ -48,6 +88,8 @@ def process_data():
             try:
                 packet, client_address = proxy.recvfrom(size)
                 connection_trails_count = 0
+                wait_ack_list.append(packet.decode())
+                print("wait ack: " + wait_ack_list)
             except:
                 connection_trails_count += 1
                 if connection_trails_count < 5:
@@ -83,8 +125,9 @@ def process_data():
         print("Internal server error")
 
 
+# 带权平均，packet header可以带一个权重，默认为1。server那里可知，做到全局平均。
 # do some calculations
-def calculate(index, client_address):
+def calculate(index, client_address, cal_type):
     # with open("new_test1.txt", "r") as f:
     #     for line in f:
     #         word_list = line.split(space)
@@ -103,15 +146,17 @@ def calculate(index, client_address):
 
     ave = total / count
     print("the average is", ave)
+    if cal_type == "average":
+        return ave
+    if cal_type == "sum":
+        return total
 
-    return ave
 
-
-def send_to_server():
+def send_to_server(cal_type):
     index_client = process_data()
     index = index_client[0]
     client_address = index_client[1]
-    ave = calculate(index, client_address)
+    ave = calculate(index, client_address, cal_type)
     packet = str(client_address) + delimiter + str(ave)
     server_address = (host, server_port)
     try:
@@ -126,11 +171,12 @@ proxy.bind((host, proxy_port))
 print("Proxy start up on %s port %s\n" % (host, proxy_port))
 
 client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-print(host + " Client connect to %s\n" % server_port)
+print(host + " Client connect to Server %s\n" % server_port)
 
 while 1:
     print("\nWaiting to receive message")
-    data, address = proxy.recvfrom(size)
-    print(data)
-    send_to_server()
+    # data, address = proxy.recvfrom(size)
+
+    calculation_type = client_basic_info()
+    send_to_server(calculation_type)
 
