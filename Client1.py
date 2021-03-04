@@ -1,11 +1,14 @@
-import socket
-import hashlib
-import os
-import numpy as np
-import time
-import datetime
-import random
+import optparse
+
 from Packet import Packet
+
+import socket
+import numpy as np
+import threading
+import queue
+import random
+import time as t
+import logging
 
 # Set address and port
 serverAddress = "127.0.0.1"
@@ -14,15 +17,19 @@ proxyAddress = "127.0.0.1"
 proxyPort = 6001
 receive_window_size = 24
 
-job_id = 1
-index = 1
-seq = 1
-
 # Delimiter
 delimiter = "|*|*|"
 space = "|#|#|"
 
 size = 200
+
+# State flags
+CLOSED = 1
+LISTEN = 2
+
+logging.basicConfig(format='[%(asctime)s.%(msecs)03d] CLIENT - %(levelname)s: %(message)s',
+                    datefmt='%H:%M:%S', filename='network.log', level=logging.INFO)
+
 
 # numpy库 相当于C的数组，定义数组类型，int 8型等。。。
 # tobytes，数组的一个函数。得到一个序列
@@ -33,194 +40,265 @@ size = 200
 # 要答辩
 # Packet class definition
 
-# Three-way handshakes
-def handshake(address):
-    connection_trails_count = 0
-    while 1:
-        print("Connect with Server " + str(serverAddress) + " " + str(serverPort))
-        # first handshake
-        syn = 1
-        seq = random.randrange(0, 10000, 1)
-        try:
-            sock.sendto(("syn" + delimiter + str(syn) + delimiter+ "seq" + delimiter + str(seq)).encode(), address)
-        except:
-            print("Internal Server Error")
-        try:
-            ack, address = sock.recvfrom(size)
-        except:
-            connection_trails_count += 1
-            if connection_trails_count < 5:
-                print("\nConnection time out, retrying")
-                continue
-            else:
-                print("\nMaximum connection trails reached, skipping request\n")
-                return False
-        from_server = ack.decode()
-        # Third handshake
-        if from_server.split(delimiter)[0] == "ack number" and int(from_server.split(delimiter)[1]) == seq + 1 \
-                and from_server.split(delimiter)[2] == "syn" and int(from_server.split(delimiter)[3]) == 1 \
-                and from_server.split(delimiter)[4] == "ack" and int(from_server.split(delimiter)[5]) == 1 \
-                and from_server.split(delimiter)[6] == "seq":
-            ack = 1
-            seq = int(from_server.split(delimiter)[7]) + 1
+class Client1:
+    def __init__(self, job_id, cal_type, file):
+        # Client Initial State
+        self.job_id = job_id
+        self.seq = random.randrange(1024)  # The current sequence number
+        self.index = 1
+        self.offset = 0
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.state = CLOSED
+
+        self.file = file
+        self.cal_type = cal_type  # Calculation type
+        self.packet_number = 0  # The number of data that is used to calculate
+
+        # Server and Proxy address
+        self.server_address = (serverAddress, serverPort)
+        self.proxy_address = (proxyAddress, proxyPort)
+
+        # Congestion control
+        self.cwnd = 3  # initial congestion window size
+        self.rwnd = 1000
+        self.ssthresh = 1000  #
+        self.packets_in_flight = []
+        self.packets_retransmit = []
+        self.queue = queue.LifoQueue()  # Two threads exchange congestion window size
+        self.first_seq = 0  # For each packets sending, the first sequence number of the packet
+        self.finish_send = False
+
+        self.srtt = -1
+        self.devrtt = 0  # calculate the devision of srtt and real rtt
+        self.rto = 0  # Retransmission timeout
+
+        self.data_list = []
+
+    # Three-way handshakes
+    def handshake(self):
+        connection_trails_count = 0
+        while 1:
+            print("Connect with Server " + str(serverAddress) + " " + str(serverPort))
+            # first handshake
+            syn = 1
             try:
-                sock.sendto(("seq" + delimiter + str(seq) + delimiter + "ack" + delimiter+ str(ack)).encode(), address)
+                msg = "syn" + delimiter + str(syn)
+                pkt = self.send_packet(msg, self.server_address)
             except:
-                print("Internal Server Error")
-            return True
-
-
-def open_file(file):
-    try:
-        file_read = open(file, 'r')
-        print("Opening file %s" % file)
-        data = file_read.read()
-        data_list = data.split(" ")
-        file_read.close()
-    except:
-        print("Requested file could not be found")
-    return data_list
-
-
-# Store basic information to compare the efficiency between in-network aggregation and without it
-def store_basic_info():
-    return 0
-
-
-# Send basic information to server and Receive ACK from proxy
-def send_basic_info(file, cal_type):
-    while 1:
-        data_list = open_file(file)
-        # msg will include operation type, data size...
-        msg = cal_type + delimiter + str(len(data_list)) ### 类型编码成整数，占用32位或8位。header可以固定。变长也可。
-        global seq
-        pkt = Packet(job_id, index, seq, len(msg), msg, 0)
-        print(seq)
-        pkt.encode_seq()
-        # Send basic information to server
-        send_packet = sock.sendto(pkt.buf, server_address)
-        try:
-            # Receive ACK from server
-            buf, address = sock.recvfrom(size)
-        except:
-            print("Time out reached, resending...")
-            continue
-        ack = Packet(0, 0, 0, 0, 0, buf)
-        ack.decode_seq()
-        if ack.seq == pkt.seq + 1:
+                logging.error("Cannot send message")
             try:
-                # Receive from proxy
-                buf, address = sock.recvfrom(size)
+                ack, address = self.sock.recvfrom(size)
+            except:
+                connection_trails_count += 1
+                if connection_trails_count < 5:
+                    print("\nConnection time out, retrying")
+                    continue
+                else:
+                    print("\nMaximum connection trails reached, skipping request\n")
+                    return False
+            from_server = Packet(0, 0, 0, 0, 0, ack)
+            from_server.decode_seq()
+            # Third handshake
+            if from_server.msg.split(delimiter)[0] == "ack number" \
+                    and int(from_server.msg.split(delimiter)[1]) == pkt.seq + 1 \
+                    and from_server.msg.split(delimiter)[2] == "syn" and int(from_server.msg.split(delimiter)[3]) == 1\
+                    and from_server.msg.split(delimiter)[4] == "ack" and int(from_server.msg.split(delimiter)[5]) == 1:
+                msg = "ack" + delimiter + str(1) + delimiter + "seq" + delimiter + str(from_server.seq + 1)
+                self.send_packet(msg, address)
+                self.state = LISTEN
+                return True
+
+    def open_file(self):
+        try:
+            file_read = open(self.file, 'r')
+            print("Opening file %s" % self.file)
+            data = file_read.read()
+            self.data_list = data.split(" ")
+            file_read.close()
+        except:
+            print("Requested file could not be found")
+
+    # Store basic information to compare the efficiency between in-network aggregation and without it
+    def store_basic_info(self):
+        return 0
+
+    # Send basic information to server and Receive ACK from proxy
+    def send_basic_info(self):
+        while 1:
+            self.open_file()
+            self.packet_number = len(self.data_list)
+            # Send basic information to server
+            # msg will include operation type, data size...
+            msg = str(self.job_id) + delimiter + self.cal_type + delimiter + str(self.packet_number)  ### 类型编码成整数，占用32位或8位。header可以固定。变长也可。
+            pkt = self.send_packet(msg, self.server_address)
+
+            try:
+                # Receive ACK from server
+                buf, address = self.sock.recvfrom(size)
             except:
                 print("Time out reached, resending...")
                 continue
             ack = Packet(0, 0, 0, 0, 0, buf)
             ack.decode_seq()
             if int(ack.msg) == pkt.seq + 1:
-                print("okkkkkkkkkkk")
-                break
+                try:
+                    # Receive ACK from proxy
+                    buf, address = self.sock.recvfrom(size)
+                except:
+                    print("Time out reached, resending...")
+                    continue
+                ack = Packet(0, 0, 0, 0, 0, buf)
+                ack.decode_seq()
+                if int(ack.msg) == pkt.seq + 1:
+                    break
+                else:
+                    continue
             else:
                 continue
 
-        else:
-            continue
+    def send_packet(self, msg, address):
+        self.offset += 1
+        pkt = Packet(self.job_id, self.index, self.seq, self.offset, msg, 0)
+        self.seq += 1
+        pkt.encode_seq()
+        try:
+            self.sock.sendto(pkt.buf, address)
+        except:
+            logging.error("Fail to send packet")
+        return pkt
+
+    def send_msg(self):
+        cwnd = self.cwnd
+        packet_index = 0
+        self.first_seq = self.seq
+        while True:
+            if min(cwnd, self.rwnd) > len(self.packets_in_flight):
+                # Retransmit
+                while self.packets_retransmit:
+                    self.send_packet(self.data_list[self.packets_retransmit[0]], self.proxy_address)
+                    self.packets_in_flight.append((self.packets_retransmit[0], t.time()))
+                    self.packets_retransmit.pop(0)
+
+                self.packets_in_flight.append((packet_index, t.time()))   # 做成字典，效率高。
+                print("\nSend packet with sequence number %s to proxy" % str(int(self.seq) - 1))
+                msg = self.data_list[packet_index]
+                self.send_packet(msg, self.proxy_address)
+                packet_index += 1
+
+            if not self.queue.empty():
+                cwnd = self.queue.get()
+                self.queue.queue.clear()
+            print("\nCurrent cwnd %s Packets in flight %s" % (cwnd, len(self.packets_in_flight)))
+
+            if packet_index >= len(self.data_list) and self.packets_in_flight == [] and self.packets_retransmit == []:
+                self.packets_in_flight.append((-1, t.time()))
+                print("\nSend finish %s to proxy")
+                self.send_packet("finish", self.proxy_address)
+            if self.finish_send:
+                break
+
+    # Receive ACK from proxy
+    def recv_ack(self):
+        while True:
+            self.queue.put(self.cwnd)
+            try:
+                ack, address = self.sock.recvfrom(size)
+            except:
+                logging.error("The client does not receive ack from proxy")
+            pkt = Packet(0, 0, 0, 0, 0, ack)
+            pkt.decode_seq()
+            seq = int(pkt.msg) - 1
+            if "finish" in pkt.msg:
+                self.finish_send = True
+            flag_digit = seq - self.first_seq
+            for i in range(0, len(self.packets_in_flight)):
+                if self.packets_in_flight[i][0] == flag_digit:
+                    send_time = self.packets_in_flight[i][1]
+                    self.packets_in_flight.pop(i)
+                    break
+
+            print("\nReceive ack of packet with sequence number %s" % str(int(pkt.msg)-1))
+            # Slow start
+            if self.cwnd < self.ssthresh:
+                self.cwnd += 1
+            # Congestion control
+            else:
+                self.cwnd += 1.0 / self.cwnd
+
+            receive_time = t.time()
+            rtt = receive_time - send_time
+            # srtt, Jacobson / Karels algorithm
+            if self.srtt < 0:
+                # First time setting srtt
+                self.srtt = rtt
+                self.devrtt = rtt / 2
+                self.rto = self.srtt + max(0.010, 4 * self.devrtt)
+            else:
+                alpha = 0.125
+                beta = 0.25
+                self.srtt = (1 - alpha) * self.srtt + alpha * rtt
+                self.devrtt = (1 - beta) * self.devrtt + beta * abs(rtt - self.srtt)
+                self.rto = self.srtt + max(0.010, 4 * self.devrtt)
+                print("rto: %s" % self.rto)
+            # Situation of losing packets
+            for i in range(0, len(self.packets_in_flight)):
+                if t.time() - self.packets_in_flight[i][1] >= self.rto:
+                    self.packets_retransmit.append(self.packets_in_flight[0][0])
+                    self.cwnd = 3
+                    self.ssthresh = 1/2 * self.ssthresh
+                    print("Retransmit")
+                else:
+                    break
+
+    # Receive result from server
+    def result_from_server(self):
+        result = ""
+        try:
+            # sock.sendto(("packet num: " + delimiter + str(len(data_list))).encode(), address)
+            self.sock.settimeout(4)
+            result, address = self.sock.recvfrom(size)
+        except:
+            print("Internal Server Error")
+        print(result.decode())
+
+    def run(self):
+            # flag = False
+        # # Connection initiation
+        # while 1:
+        #     if self.state == CLOSED:
+        #         logging.info("Handshaking...")
+        #         flag = True
+        #         self.handshake()
+        #     elif self.state == LISTEN:
+        #         pass
+        #     if flag == True:
+                self.handshake()
+                userInput = input("\nInput file and Calculation type: ")
+                # self.job_id = int(userInput.split(" ")[0])
+                # self.cal_type = userInput.split(" ")[1]
+                # self.file = userInput.split(" ")[2]
+                # print("Requesting the %s in file %s" % (userInput.split(" ")[1], userInput.split(" ")[2]))
+                print("Requesting the %s in file %s" % (self.cal_type, self.file))
+                self.send_basic_info()
+                # self.sock.sendto("Start sending".encode(), proxy_address)
+                send_msg = threading.Thread(target=self.send_msg)
+                recv_msg = threading.Thread(target=self.recv_ack)
+                send_msg.start()
+                recv_msg.start()
+                flag = False
+
+                # self.send_data(userInput.split(",")[0])
+            # self.result_from_server()
 
 
-# Unpack data
-def unpack(file, address):
-    window_size = 1 # real window size
-    limit_window_size = 16 # window size of starting congestion avoidance algorithm
-    drop_count = 0
-    packet_count = 0
-    start_time = time.time()
-
-    try:
-        data_list = open_file(file)
-
-        x = 0
-        # Fragment and send data one by one
-        while x < len(data_list):
-            count = 0
-            for i in range(0, window_size):
-                ack_flag = False
-                packet_count += 1
-                msg = data_list[x]
-                print(msg)
-                pkt.make(msg)
-                # pack
-                final_packet = str(pkt.checksum) + delimiter + str(pkt.seqNo) + delimiter + str(
-                    pkt.index) + delimiter + pkt.msg
-            # Send packet
-            send_packet = sock.sendto(final_packet.encode(), address)
-            print("Sent %s bytes to %s, wait acknowledgment.." % (send_packet, address))
-
-            # Quick retransmission algorithm
-            for i in range(0, window_size):
-                for x in range(0, 3):
-                    try:
-                        # Receive ack from server
-                        ack, address = sock.recvfrom(size)
-                    except:
-                        print("Time out reached, resending...package %s" % x)
-                        continue
-                    if ack.decode() == str(pkt.seqNo):
-                        ack_flag = True
-                        pkt.seqNo += 1 # 加上一次的数据量 # congestion window同 + 包的大小/window # 两者要同！！！
-                        print("Acknowledged by: " + ack.decode() + "\nAcknowledged at: " + str(
-                            datetime.datetime.utcnow()) + "\nElapsed: " + str(time.time() - start_time) + "\n")
-                        x += 1
-                    if ack_flag:
-                        if window_size < receive_window_size:
-                            # Slow start algorithm
-                            if window_size < limit_window_size:
-                                window_size = window_size * 2
-                            # Congestion avoidance algorithm
-                            elif window_size >= limit_window_size:
-                                window_size += 1
-                        break
-                    # Quick recovery algorithm
-                    if x == 2:
-                        window_size = window_size / 2
-                        limit_window_size = max(window_size, limit_window_size / 2)
-                        send_packet = sock.sendto(final_packet.encode(), address)
-                        print("Sent %s bytes to %s, wait acknowledgment.." % (send_packet, address))
-                        x = 0
-
-        print("Packets sended: " + str(packet_count))
-    except:
-        print("Internal server error")
-
-
-# Receive result from server
-def result_from_server():
-    result = ""
-    try:
-        # sock.sendto(("packet num: " + delimiter + str(len(data_list))).encode(), address)
-        sock.settimeout(4)
-        result, address = sock.recvfrom(size)
-    except:
-        print("Internal Server Error")
-    print(result.decode())
-
-
-# Connection initiation
-while 1:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(10)
-    server_address = (serverAddress, serverPort)
-    proxy_address = (proxyAddress, proxyPort)
-    if not handshake(server_address):
-        break
-    userInput = input("\nInput file and Calculation type: ")
-    print("Requesting the %s in file %s" % (userInput.split(",")[1], userInput.split(",")[0]))
-    if "average" in userInput.split(",")[1]:
-        calculation_type = "average"
-    elif "sum" in userInput.split(",")[1]:
-        calculation_type = "sum"
-    send_basic_info(userInput.split(",")[0], calculation_type)
-    sock.sendto("Start sending".encode(), proxy_address)
-    unpack(userInput.split(",")[0], proxy_address)
-    result_from_server()
+if __name__ == '__main__':
+    parser = optparse.OptionParser()
+    parser.add_option('-j', dest='job', type='int', default=1)
+    parser.add_option('-t', dest='type', default="sum")
+    parser.add_option('-f', dest='file', default="test1.txt")
+    (options, args) = parser.parse_args()
+    client = Client1(options.job, options.type, options.file)
+    client.run()
 
     # finally:
     #     print("Closing socket")
