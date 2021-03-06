@@ -36,7 +36,8 @@ class Proxy:
         self.packet_number = 0  # Packet number
         self.cal_type = 0  # calculation type
 
-        # Congestion control
+        # flow control
+        self.rwnd = 1000
 
     # Receive basic information of client from server and send ACK to server and client
     def client_basic_info(self):
@@ -82,25 +83,28 @@ class Proxy:
         print("Receive basic information of a client %s " % c)
         print("Calculation type is %s \nNumber of Packets is %s" % (tmp.split(delimiter)[3], tmp.split(delimiter)[4]))
         client_info.append(str(client_address) + delimiter + str(job_id) + delimiter + cal_type + delimiter + str(packet_number))
+        print(int(tmp.split(delimiter)[1]))
+        return int(tmp.split(delimiter)[1])
 
     # Receive data from client and send ACK back
-    def recv_data(self):
+    def recv_data(self, seq):
         # The file is to make a backup
         f = open("new_test1.txt", 'w')
         seq_no_flag = 1
         data_list = []
+        client_seq = seq
         # Receive the number of packets
-        while 1:
+        while True:
             # Receive indefinitely
             try:
                 data, client_address = self.sock.recvfrom(size)
-                for i in client_info:
-                    if i.split(delimiter)[0] == str(client_address):
-                        self.client_address = client_address
-                        self.job_id = int(i.split(delimiter)[1])
-                        self.cal_type = i.split(delimiter)[2]
-                        self.packet_number = int(i.split(delimiter)[3])
-                        break
+                # for i in client_info:
+                #     if i.split(delimiter)[0] == str(client_address):
+                #         self.client_address = client_address
+                #         self.job_id = int(i.split(delimiter)[1])
+                #         self.cal_type = i.split(delimiter)[2]
+                #         self.packet_number = int(i.split(delimiter)[3])
+                #         break
                 connection_trails_count = 0
             except:
                 connection_trails_count += 1
@@ -116,16 +120,20 @@ class Proxy:
             # Send Ack to Client
             if pkt.msg == "finish":
                 msg = str(pkt.seq + 1) + "finish"
-                data_list = np.append(data_list, pkt.msg)
             else:
-                msg = pkt.seq + 1
+                packet_index = pkt.msg.split(delimiter)[1]
+
+                print(float(pkt.msg.split(delimiter)[0]))
+                data_list = np.append(data_list, float(pkt.msg.split(delimiter)[0]))
             self.offset += 1
+            msg = str(pkt.seq + 1) + delimiter + str(self.rwnd) + delimiter + str(packet_index)
             ack_pkt = Packet(self.job_id, 0, self.seq, self.offset, msg, 0)
             ack_pkt.encode_seq()
-            self.sock.sendto(ack_pkt.buf, self.client_address)
+            self.sock.sendto(ack_pkt.buf, client_address)
             self.seq += 1
             print("Receive packet %s from Client %s, sending ack..." % (pkt.seq, client_address))
             if pkt.msg == "finish":
+                print("Receive all packets from client")
                 break
         return data_list
 
@@ -152,7 +160,7 @@ class Proxy:
         return ans
 
     def send_to_server(self):
-        data_list = self.recv_data()
+
         ave = self.calculate(self.index)
         packet = str(self.client_address) + delimiter + str(ave)
         server_address = (host, server_port)
@@ -169,8 +177,9 @@ class Proxy:
             print("\nWaiting to receive message")
             # data, address = proxy.recvfrom(size)
 
-            self.client_basic_info()
-            self.send_to_server()
+            client_seq = self.client_basic_info()
+            data_list = self.recv_data(client_seq)
+            # self.send_to_server()
 
 
 if __name__ == '__main__':

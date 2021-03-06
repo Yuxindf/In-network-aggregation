@@ -1,7 +1,7 @@
-import optparse
 
 from Packet import Packet
 
+import collections
 import socket
 import numpy as np
 import threading
@@ -26,6 +26,7 @@ size = 200
 # State flags
 CLOSED = 1
 LISTEN = 2
+CONNECTED = 3
 
 logging.basicConfig(format='[%(asctime)s.%(msecs)03d] CLIENT - %(levelname)s: %(message)s',
                     datefmt='%H:%M:%S', filename='network.log', level=logging.INFO)
@@ -41,17 +42,17 @@ logging.basicConfig(format='[%(asctime)s.%(msecs)03d] CLIENT - %(levelname)s: %(
 # Packet class definition
 
 class Client1:
-    def __init__(self, job_id, cal_type, file):
+    def __init__(self):
         # Client Initial State
-        self.job_id = job_id
+        self.job_id = 0
         self.seq = random.randrange(1024)  # The current sequence number
         self.index = 1
         self.offset = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.state = CLOSED
 
-        self.file = file
-        self.cal_type = cal_type  # Calculation type
+        self.file = 0
+        self.cal_type = 0  # Calculation type
         self.packet_number = 0  # The number of data that is used to calculate
 
         # Server and Proxy address
@@ -60,17 +61,17 @@ class Client1:
 
         # Congestion control
         self.cwnd = 3  # initial congestion window size
-        self.rwnd = 1000
+        # self.rwnd = 1000
         self.ssthresh = 1000  #
-        self.packets_in_flight = []
-        self.packets_retransmit = []
-        self.queue = queue.LifoQueue()  # Two threads exchange congestion window size
-        self.first_seq = 0  # For each packets sending, the first sequence number of the packet
-        self.finish_send = False
+        self.packets_in_flight = collections.OrderedDict()
+        self.packets_retransmit = collections.OrderedDict()
+        self.packets_recv_ack = collections.OrderedDict()
 
         self.srtt = -1
         self.devrtt = 0  # calculate the devision of srtt and real rtt
-        self.rto = 0  # Retransmission timeout
+        self.rto = 10  # Retransmission timeout
+        self.time_last_lost = 0
+        self.time_this_lost = 0
 
         self.data_list = []
 
@@ -105,7 +106,7 @@ class Client1:
                     and from_server.msg.split(delimiter)[4] == "ack" and int(from_server.msg.split(delimiter)[5]) == 1:
                 msg = "ack" + delimiter + str(1) + delimiter + "seq" + delimiter + str(from_server.seq + 1)
                 self.send_packet(msg, address)
-                self.state = LISTEN
+                self.state = CONNECTED
                 return True
 
     def open_file(self):
@@ -167,89 +168,6 @@ class Client1:
             logging.error("Fail to send packet")
         return pkt
 
-    def send_msg(self):
-        cwnd = self.cwnd
-        packet_index = 0
-        self.first_seq = self.seq
-        while True:
-            if min(cwnd, self.rwnd) > len(self.packets_in_flight):
-                # Retransmit
-                while self.packets_retransmit:
-                    self.send_packet(self.data_list[self.packets_retransmit[0]], self.proxy_address)
-                    self.packets_in_flight.append((self.packets_retransmit[0], t.time()))
-                    self.packets_retransmit.pop(0)
-
-                self.packets_in_flight.append((packet_index, t.time()))   # 做成字典，效率高。
-                print("\nSend packet with sequence number %s to proxy" % str(int(self.seq) - 1))
-                msg = self.data_list[packet_index]
-                self.send_packet(msg, self.proxy_address)
-                packet_index += 1
-
-            if not self.queue.empty():
-                cwnd = self.queue.get()
-                self.queue.queue.clear()
-            print("\nCurrent cwnd %s Packets in flight %s" % (cwnd, len(self.packets_in_flight)))
-
-            if packet_index >= len(self.data_list) and self.packets_in_flight == [] and self.packets_retransmit == []:
-                self.packets_in_flight.append((-1, t.time()))
-                print("\nSend finish %s to proxy")
-                self.send_packet("finish", self.proxy_address)
-            if self.finish_send:
-                break
-
-    # Receive ACK from proxy
-    def recv_ack(self):
-        while True:
-            self.queue.put(self.cwnd)
-            try:
-                ack, address = self.sock.recvfrom(size)
-            except:
-                logging.error("The client does not receive ack from proxy")
-            pkt = Packet(0, 0, 0, 0, 0, ack)
-            pkt.decode_seq()
-            seq = int(pkt.msg) - 1
-            if "finish" in pkt.msg:
-                self.finish_send = True
-            flag_digit = seq - self.first_seq
-            for i in range(0, len(self.packets_in_flight)):
-                if self.packets_in_flight[i][0] == flag_digit:
-                    send_time = self.packets_in_flight[i][1]
-                    self.packets_in_flight.pop(i)
-                    break
-
-            print("\nReceive ack of packet with sequence number %s" % str(int(pkt.msg)-1))
-            # Slow start
-            if self.cwnd < self.ssthresh:
-                self.cwnd += 1
-            # Congestion control
-            else:
-                self.cwnd += 1.0 / self.cwnd
-
-            receive_time = t.time()
-            rtt = receive_time - send_time
-            # srtt, Jacobson / Karels algorithm
-            if self.srtt < 0:
-                # First time setting srtt
-                self.srtt = rtt
-                self.devrtt = rtt / 2
-                self.rto = self.srtt + max(0.010, 4 * self.devrtt)
-            else:
-                alpha = 0.125
-                beta = 0.25
-                self.srtt = (1 - alpha) * self.srtt + alpha * rtt
-                self.devrtt = (1 - beta) * self.devrtt + beta * abs(rtt - self.srtt)
-                self.rto = self.srtt + max(0.010, 4 * self.devrtt)
-                print("rto: %s" % self.rto)
-            # Situation of losing packets
-            for i in range(0, len(self.packets_in_flight)):
-                if t.time() - self.packets_in_flight[i][1] >= self.rto:
-                    self.packets_retransmit.append(self.packets_in_flight[0][0])
-                    self.cwnd = 3
-                    self.ssthresh = 1/2 * self.ssthresh
-                    print("Retransmit")
-                else:
-                    break
-
     # Receive result from server
     def result_from_server(self):
         result = ""
@@ -262,42 +180,131 @@ class Client1:
         print(result.decode())
 
     def run(self):
-            # flag = False
-        # # Connection initiation
-        # while 1:
-        #     if self.state == CLOSED:
-        #         logging.info("Handshaking...")
-        #         flag = True
-        #         self.handshake()
-        #     elif self.state == LISTEN:
-        #         pass
-        #     if flag == True:
+        # Connection initiation
+        packet_index = -1
+        rwnd = 1000
+        while True:
+            if self.state == CLOSED:
+                logging.info("Handshaking...")
                 self.handshake()
-                userInput = input("\nInput file and Calculation type: ")
-                # self.job_id = int(userInput.split(" ")[0])
-                # self.cal_type = userInput.split(" ")[1]
-                # self.file = userInput.split(" ")[2]
+                userInput = "1 maximum test1.txt"
+                # userInput = input("\nInput file and Calculation type: ")
+                self.job_id = int(userInput.split(" ")[0])
+                self.cal_type = userInput.split(" ")[1]
+                self.file = userInput.split(" ")[2]
                 # print("Requesting the %s in file %s" % (userInput.split(" ")[1], userInput.split(" ")[2]))
                 print("Requesting the %s in file %s" % (self.cal_type, self.file))
                 self.send_basic_info()
+            elif self.state == LISTEN:
+                pass
+            elif self.state == CONNECTED:
+                # Send message
+                if packet_index < 0:
+                    packet_index = 0
+
                 # self.sock.sendto("Start sending".encode(), proxy_address)
-                send_msg = threading.Thread(target=self.send_msg)
-                recv_msg = threading.Thread(target=self.recv_ack)
-                send_msg.start()
-                recv_msg.start()
-                flag = False
+                # print(str(packet_index >= len(self.data_list)) + " " + str(self.packets_in_flight) + " " + str(
+                #     self.packets_retransmit))
+                if packet_index >= len(self.data_list) and self.packets_in_flight == {} and self.packets_retransmit == {}:
+                    # self.packets_in_flight.append((self.seq, t.time()))
+                    print("\nSend finish %s to proxy")
+                    # self.send_packet("finish", self.proxy_address)
+
+                # Send packets
+                if min(self.cwnd, rwnd) > len(self.packets_in_flight)\
+                        and (packet_index < len(self.data_list) or self.packets_retransmit != {}):
+                    while min(self.cwnd, rwnd) > len(self.packets_in_flight):
+
+                        # Retransmit
+                        if self.packets_retransmit != {}:
+                            for key in list(self.packets_retransmit.keys()):
+                                msg = str(self.data_list[key]) + delimiter + str(key)
+                                self.send_packet(msg, self.proxy_address)
+                                self.packets_in_flight[key] = {"seq": self.seq, "time": t.time()}
+                                self.packets_retransmit.pop(key)
+                                print("retransmit %s" % key)
+
+                        # Send packet
+                        if packet_index < len(self.data_list):
+                            self.packets_in_flight[packet_index] = {"seq": self.seq, "time": t.time()}  # 做成字典，效率高。
+                            print("Send to proxy: Packet index %s Seq %s" % (packet_index, str(int(self.seq))))
+                            msg = str(self.data_list[packet_index]) + delimiter + str(packet_index)
+                            self.send_packet(msg, self.proxy_address)
+                            packet_index += 1
+
+                # print("\nCurrent cwnd %s Packets in flight %s" % (self.cwnd, len(self.packets_in_flight)))
+
+                # Receive ack from proxy
+                try:
+                    ack, address = self.sock.recvfrom(size)
+                except:
+                    logging.error("The client does not receive ack from proxy")
+                pkt = Packet(0, 0, 0, 0, 0, ack)
+                pkt.decode_seq()
+                seq = int(pkt.msg.split(delimiter)[0]) - 1
+                send_time = 0
+                if self.packets_in_flight != {}:
+                    for key in self.packets_in_flight.keys():
+                        if seq == self.packets_in_flight[key]["seq"]:
+                            send_time = self.packets_in_flight[key]["time"]
+                            self.packets_in_flight.pop(key)
+                            rwnd = int(pkt.msg.split(delimiter)[1])
+                            print("\nAck: packet index %s" % int(pkt.msg.split(delimiter)[2]))
+                            break
+
+                    # Situation of losing packets
+                    for key in list(self.packets_in_flight.keys()):
+                        if t.time() - self.packets_in_flight[key]["time"] >= self.rto:
+                            self.packets_retransmit[key] = ""
+                            self.packets_in_flight.pop(key)
+                            self.time_this_lost = t.time()
+                            if self.time_this_lost - self.time_last_lost > self.srtt:
+                                self.cwnd = 3
+                                self.ssthresh = 1 / 2 * self.ssthresh
+                                self.time_last_lost = self.time_this_lost
+                            print("cwnd %s" % self.cwnd)
+                            print("Retransmit: packet index %s" % key)
+                        else:
+                            break
+
+                    # Slow start
+                    if self.cwnd < self.ssthresh:
+                        self.cwnd += 1
+                    # Congestion control
+                    else:
+                        self.cwnd += 1.0 / self.cwnd
+
+                    receive_time = t.time()
+                    rtt = receive_time - send_time
+                    # srtt, Jacobson / Karels algorithm
+                    if self.srtt < 0:
+                        # First time setting srtt
+                        self.srtt = rtt
+                        self.devrtt = rtt / 2
+                        self.rto = self.srtt + max(0.010, 4 * self.devrtt)
+                    else:
+                        alpha = 0.125
+                        beta = 0.25
+                        self.devrtt = (1 - beta) * self.devrtt + beta * abs(rtt - self.srtt)
+                        self.srtt = (1 - alpha) * self.srtt + alpha * rtt
+                        self.rto = self.srtt + max(0.010, 4 * self.devrtt)
+                        self.rto = max(self.rto, 1)  # Always round up RTO.
+                        self.rto = min(self.rto, 60)  # Maximum value 60 seconds.
+                        # print("rto: %s \n srtt : %s" % (self.rto, self.srtt))
+
+
+
+                # send_msg = threading.Thread(target=self.send_msg)
+                # recv_msg = threading.Thread(target=self.recv_ack)
+                # send_msg.start()
+                # recv_msg.start()
 
                 # self.send_data(userInput.split(",")[0])
             # self.result_from_server()
 
 
 if __name__ == '__main__':
-    parser = optparse.OptionParser()
-    parser.add_option('-j', dest='job', type='int', default=1)
-    parser.add_option('-t', dest='type', default="sum")
-    parser.add_option('-f', dest='file', default="test1.txt")
-    (options, args) = parser.parse_args()
-    client = Client1(options.job, options.type, options.file)
+    client = Client1()
     client.run()
 
     # finally:
