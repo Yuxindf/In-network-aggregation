@@ -49,34 +49,18 @@ class Proxy:
         return pkt
 
     # Receive basic information of client from server and send ACK to server and client
-    def client_basic_info(self):
-        connection_trails_count = 0
-        while 1:
-            try:
-                # receive basic information from server
-                info, address = self.sock.recvfrom(size)
-                break
-            except:
-                connection_trails_count += 1
-                if connection_trails_count < 5:
-                    print("\nConnection time out, retrying")
-                    continue
-                else:
-                    print("\nMaximum connection trails reached, skipping request\n")
-                    return False
-        info = Packet(0, 0, 0, 0, 0, info)
-        info.decode_seq()
-        tmp = info.msg  # Client Basic Information
+    def client_basic_info(self, info, address):
+        msg = info.msg  # Client Basic Information
         # Obtain calculation type and packet number
-        job_id = int(tmp.split(delimiter)[2])
-        client_id = int(tmp.split(delimiter)[3])
-        cal_type = tmp.split(delimiter)[4]
-        packet_number = int(tmp.split(delimiter)[5])
+        job_id = int(msg.split(delimiter)[3])
+        client_id = int(msg.split(delimiter)[4])
+        cal_type = msg.split(delimiter)[5]
+        packet_number = int(msg.split(delimiter)[6])
         # Send Ack to Server
-        msg = "proxy ack" + delimiter + str(client_id) + delimiter + str(info.seq + 1)
-        self.send_packet(msg, address)
+        ack = "proxy ack" + delimiter + str(client_id) + delimiter + str(info.seq + 1)
+        self.send_packet(ack, address)
         # obtain client address
-        c = tmp.split(delimiter)[0]
+        c = msg.split(delimiter)[1]
         client_address = str(c[1:-1].split(", ")[0][1:-1])
         client_port = c[1:-1].split(", ")[1]
         client_address = (client_address, int(client_port))
@@ -85,54 +69,28 @@ class Proxy:
         self.clients[client_id] = {"address": client_address, "job id": job_id, "cal type": cal_type, "packet number": packet_number}
 
     # Receive data from client and send ACK back
-    def recv_data(self, seq):
+    def recv_data(self, data, address):
         # The file is to make a backup
         f = open("new_test1.txt", 'w')
         seq_no_flag = 1
         data_list = []
-        client_seq = seq
-        # Receive the number of packets
-        while True:
-            # Receive indefinitely
-            try:
-                data, client_address = self.sock.recvfrom(size)
-                # for i in client_info:
-                #     if i.split(delimiter)[0] == str(client_address):
-                #         self.client_address = client_address
-                #         self.job_id = int(i.split(delimiter)[1])
-                #         self.cal_type = i.split(delimiter)[2]
-                #         self.packet_number = int(i.split(delimiter)[3])
-                #         break
-                connection_trails_count = 0
-            except:
-                connection_trails_count += 1
-                if connection_trails_count < 5:
-                    print("\nConnection time out, retrying")
-                    continue
-                else:
-                    print("\nMaximum connection trails reached, skipping request\n")
-                    os.remove(f)
-                    break
-            pkt = Packet(0, 0, 0, 0, 0, data)
-            pkt.decode_seq()
-            # Send Ack to Client
-            if pkt.msg == "finish":
-                msg = str(pkt.seq + 1) + "finish"
-            else:
-                packet_index = pkt.msg.split(delimiter)[1]
-                print(float(pkt.msg.split(delimiter)[0]))
-                data_list = np.append(data_list, float(pkt.msg.split(delimiter)[0]))
-            self.offset += 1
-            msg = str(pkt.seq + 1) + delimiter + str(self.rwnd) + delimiter + str(packet_index)
-            ack_pkt = Packet(0, 0, self.seq, self.offset, msg, 0)
-            ack_pkt.encode_seq()
-            self.sock.sendto(ack_pkt.buf, client_address)
-            self.seq += 1
-            print("Receive packet %s from Client %s, sending ack..." % (pkt.seq, client_address))
-            if pkt.msg == "finish":
-                print("Receive all packets from client")
-                break
-        return data_list
+
+        # Send Ack to Client
+        if data.msg == "finish":
+            msg = str(data.seq + 1) + "finish"
+        else:
+            packet_index = data.msg.split(delimiter)[2]
+            print(float(data.msg.split(delimiter)[1]))
+            data_list = np.append(data_list, float(data.msg.split(delimiter)[1]))
+        self.offset += 1
+        msg = str(data.seq + 1) + delimiter + str(self.rwnd) + delimiter + str(packet_index)
+        ack_pkt = Packet(0, 0, self.seq, self.offset, msg, 0)
+        ack_pkt.encode_seq()
+        self.sock.sendto(ack_pkt.buf, address)
+        self.seq += 1
+        print("Receive packet %s from Client %s, sending ack..." % (data.seq, address))
+        if data.msg == "finish":
+            print("Receive all packets from client")
 
     # 带权平均，packet header可以带一个权重，默认为1。server那里可知，做到全局平均。
     # do some calculations
@@ -172,10 +130,15 @@ class Proxy:
         print(host + " Client connect to Server %s\n" % server_port)
         while 1:
             print("\nWaiting to receive message")
-            # data, address = proxy.recvfrom(size)
+            recv, address = self.sock.recvfrom(size)
+            decoded_pkt = Packet(0, 0, 0, 0, 0, recv)
+            decoded_pkt.decode_seq()
+            if "client info" in decoded_pkt.msg:
+                self.client_basic_info(decoded_pkt, address)
+            elif "data" in decoded_pkt.msg:
+                self.recv_data(decoded_pkt, address)
 
-            client_seq = self.client_basic_info()
-            data_list = self.recv_data(client_seq)
+
             # self.send_to_server()
 
 

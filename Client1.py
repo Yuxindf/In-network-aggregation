@@ -208,7 +208,7 @@ class Client1:
                         # Retransmit
                         if self.packets_retransmit != {}:
                             for key in list(self.packets_retransmit.keys()):
-                                msg = str(self.data_list[key]) + delimiter + str(key)
+                                msg = "data" + delimiter + str(self.data_list[key]) + delimiter + str(key)
                                 self.send_packet(msg, self.proxy_address)
                                 self.packets_in_flight[key] = {"seq": self.seq, "time": t.time()}
                                 self.packets_retransmit.pop(key)
@@ -218,7 +218,7 @@ class Client1:
                         if packet_index < len(self.data_list):
                             self.packets_in_flight[packet_index] = {"seq": self.seq, "time": t.time()}  # 做成字典，效率高。
                             print("Send to proxy: Packet index %s Seq %s" % (packet_index, str(int(self.seq))))
-                            msg = str(self.data_list[packet_index]) + delimiter + str(packet_index)
+                            msg = "data" + delimiter + str(self.data_list[packet_index]) + delimiter + str(packet_index)
                             self.send_packet(msg, self.proxy_address)
                             packet_index += 1
 

@@ -99,8 +99,8 @@ class Server:
 
         # Send basic information to proxy
         # msg will include operation type, client address, client seq and size
-        msg = str(address) + delimiter + str(client_seq) + delimiter + str(info.job_id) + delimiter + str(info.client_id) + \
-              delimiter + cal_type + delimiter + packet_number
+        msg = "client info" + delimiter + str(address) + delimiter + str(client_seq) + delimiter + str(info.job_id) +\
+              delimiter + str(info.client_id) + delimiter + cal_type + delimiter + packet_number
         self.clients[info.client_id]["server seq"] = self.seq
         self.clients[info.client_id]["client seq"] = info.seq
         self.send_packet(msg, proxy_address)
@@ -156,27 +156,27 @@ class Server:
         while True:
             # Start - Connection initiation
             recv, address = self.sock.recvfrom(size)
-            decode_pkt = Packet(0, 0, 0, 0, 0, recv)
-            decode_pkt.decode_seq()
+            decoded_pkt = Packet(0, 0, 0, 0, 0, recv)
+            decoded_pkt.decode_seq()
             # First and Second Handshake
-            if "syn" in decode_pkt.msg and str(1) in decode_pkt.msg:
-                msg = "ack number" + delimiter + str(decode_pkt.seq + 1) + delimiter + "syn" + delimiter + str(1) + \
+            if "syn" in decoded_pkt.msg and str(1) in decoded_pkt.msg:
+                msg = "ack number" + delimiter + str(decoded_pkt.seq + 1) + delimiter + "syn" + delimiter + str(1) + \
                       delimiter + "ack" + delimiter + str(1)
                 self.send_packet(msg, address)
                 server_seq = self.seq - 1
-                self.clients[decode_pkt.client_id] = {"address": address, "server seq": server_seq - 1}
+                self.clients[decoded_pkt.client_id] = {"address": address, "server seq": server_seq - 1}
             # Third handshake
-            elif "client ack" in decode_pkt.msg and decode_pkt.msg.split(delimiter)[1] ==1:
-                last_seq = int(decode_pkt.msg.split(delimiter)[3])
-                if self.clients[decode_pkt.client_id]["server seq"] + 1 == last_seq:
-                    self.clients[decode_pkt.client_id]["state"] = "connected"
+            elif "client ack" in decoded_pkt.msg and decoded_pkt.msg.split(delimiter)[1] ==1:
+                last_seq = int(decoded_pkt.msg.split(delimiter)[3])
+                if self.clients[decoded_pkt.client_id]["server seq"] + 1 == last_seq:
+                    self.clients[decoded_pkt.client_id]["state"] = "connected"
 
             # Receive client basic information
-            elif "client info" in decode_pkt.msg:
-                self.client_basic_info(decode_pkt, address)
-            elif "proxy ack" in decode_pkt.msg:
-                client_id = int(decode_pkt.msg.split(delimiter)[1])
-                if int(decode_pkt.msg.split(delimiter)[2]) == self.clients[client_id]["server seq"] + 1:
+            elif "client info" in decoded_pkt.msg:
+                self.client_basic_info(decoded_pkt, address)
+            elif "proxy ack" in decoded_pkt.msg:
+                client_id = int(decoded_pkt.msg.split(delimiter)[1])
+                if int(decoded_pkt.msg.split(delimiter)[2]) == self.clients[client_id]["server seq"] + 1:
                     # Send Ack to client
                     self.send_packet(self.clients[client_id]["client seq"] + 1, self.clients[client_id]["address"])
                     print("okkk")
