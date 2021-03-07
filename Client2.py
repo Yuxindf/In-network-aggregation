@@ -1,184 +1,303 @@
+
+from Packet import Packet
+
+import collections
 import socket
-import hashlib
-import os
-import time
-import datetime
+import numpy as np
+import threading
+import queue
 import random
+import time as t
+import logging
 
 # Set address and port
 serverAddress = "127.0.0.1"
 serverPort = 10000
 proxyAddress = "127.0.0.1"
 proxyPort = 6001
+receive_window_size = 24
 
 # Delimiter
 delimiter = "|*|*|"
+space = "|#|#|"
 
 size = 200
 
+# State flags
+CLOSED = 1
+LISTEN = 2
+CONNECTED = 3
+
+logging.basicConfig(format='[%(asctime)s.%(msecs)03d] CLIENT - %(levelname)s: %(message)s',
+                    datefmt='%H:%M:%S', filename='network.log', level=logging.INFO)
+
+
+# numpy库 相当于C的数组，定义数组类型，int 8型等。。。
+# tobytes，数组的一个函数。得到一个序列
+# 要解序列化。 frombuffer, 转化回数组。
+# numpy有相应函数：max，ave等
+# 运算：加权平均；取最大；取最小。差不多了。
+# 公共结构、数可以放进一个class，方便改。
+# 要答辩
 # Packet class definition
-class Packet:
-    checksum = 0
-    seqNo = 1
-    msg = 0
-    index = 2
 
-    def make(self, data):
-        self.msg = data
-        # change the parameter to bytes type
-        self.checksum = hashlib.sha256(data.encode()).hexdigest()
-        print("Length: %s\nSequence number: %s" % (len(data.split(" ")), self.seqNo))
+class Client2:
+    def __init__(self):
+        self.client_id = 2
+        # Client Initial State
+        self.job_id = 0
+        self.seq = random.randrange(1024)  # The current sequence number
+        self.index = 1
+        self.offset = 0
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.state = CLOSED
 
+        self.file = 0
+        self.cal_type = 0  # Calculation type
+        self.packet_number = 0  # The number of data that is used to calculate
 
-# Three-way handshakes
-def handshake(address):
-    connection_trails_count = 0
-    while 1:
-        print("Connect with Server " + str(serverAddress) + " " + str(serverPort))
-        # first handshake
-        syn = 1
-        seq = random.randrange(0, 10000, 1)
-        try:
-            sock.sendto(("syn" + delimiter + str(syn) + delimiter+ "seq" + delimiter + str(seq)).encode(), address)
-        except:
-            print("Internal Server Error")
-        try:
-            ack, address = sock.recvfrom(size)
-        except:
-            connection_trails_count += 1
-            if connection_trails_count < 5:
-                print("\nConnection time out, retrying")
-                continue
-            else:
-                print("\nMaximum connection trails reached, skipping request\n")
-                return False
-        from_server = ack.decode()
-        # Third handshake
-        if from_server.split(delimiter)[0] == "ack number" and int(from_server.split(delimiter)[1]) == seq + 1 \
-                and from_server.split(delimiter)[2] == "syn" and int(from_server.split(delimiter)[3]) == 1 \
-                and from_server.split(delimiter)[4] == "ack" and int(from_server.split(delimiter)[5]) == 1 \
-                and from_server.split(delimiter)[6] == "seq":
-            ack = 1
-            seq = int(from_server.split(delimiter)[7]) + 1
+        # Server and Proxy address
+        self.server_address = (serverAddress, serverPort)
+        self.proxy_address = (proxyAddress, proxyPort)
+
+        # Congestion control
+        self.cwnd = 3  # initial congestion window size
+        # self.rwnd = 1000
+        self.ssthresh = 1000  #
+        self.packets_in_flight = collections.OrderedDict()
+        self.packets_retransmit = collections.OrderedDict()
+        self.packets_recv_ack = collections.OrderedDict()
+
+        self.srtt = -1
+        self.devrtt = 0  # calculate the devision of srtt and real rtt
+        self.rto = 10  # Retransmission timeout
+        self.time_last_lost = 0
+        self.time_this_lost = 0
+
+        self.data_list = []
+
+    # Three-way handshakes
+    def handshake(self):
+        connection_trails_count = 0
+        while True:
+            print("Connect with Server " + str(serverAddress) + " " + str(serverPort))
+            # first handshake
+            syn = 1
+            # try:
+            msg = "syn" + delimiter + str(syn)
+            pkt = self.send_packet(msg, self.server_address)
+            # except:
+            #     logging.error("Cannot send message")
             try:
-                sock.sendto(("seq" + delimiter + str(seq) + delimiter + "ack" + delimiter+ str(ack)).encode(), address)
+                ack, address = self.sock.recvfrom(size)
             except:
-                print("Internal Server Error")
-            return True
+                connection_trails_count += 1
+                if connection_trails_count < 5:
+                    print("\nConnection time out, retrying")
+                    continue
+                else:
+                    print("\nMaximum connection trails reached, skipping request\n")
+                    return False
+            from_server = Packet(0, 0, 0, 0, 0, ack)
+            from_server.decode_seq()
+            # Third handshake
+            if from_server.msg.split(delimiter)[0] == "ack number" \
+                    and int(from_server.msg.split(delimiter)[1]) == pkt.seq + 1 \
+                    and from_server.msg.split(delimiter)[2] == "syn" and int(from_server.msg.split(delimiter)[3]) == 1\
+                    and from_server.msg.split(delimiter)[4] == "ack" and int(from_server.msg.split(delimiter)[5]) == 1:
+                msg = "client ack" + delimiter + str(1) + delimiter + "seq" + delimiter + str(from_server.seq + 1)
+                self.send_packet(msg, address)
+                self.state = CONNECTED
+                break
 
+    def open_file(self):
+        try:
+            file_read = open(self.file, 'r')
+            print("Opening file %s" % self.file)
+            data = file_read.read()
+            self.data_list = data.split(" ")
+            file_read.close()
+        except:
+            print("Requested file could not be found")
 
+    # Store basic information to compare the efficiency between in-network aggregation and without it
+    def store_basic_info(self):
+        return 0
 
-def open_file(file):
-    try:
-        file_read = open(file, 'r')
-        print("Opening file %s" % file)
-        data = file_read.read()
-        data_list = data.split(" ")
-        file_read.close()
-    except:
-        print("Requested file could not be found")
-    return data_list
-
-
-# Send basic information to server
-def send_to_server():
-    pkt = Packet()
-    try:
+    # Send basic information to server and Receive ACK from proxy
+    def send_basic_info(self):
         while 1:
-            data_list = open_file()
+            self.open_file()
+            self.packet_number = len(self.data_list)
+            # Send basic information to server
             # msg will include operation type, data size...
-            msg = len(data_list)
-            print(msg)
-            pkt.make(msg)
-            packet = str(pkt.checksum) + delimiter + str(pkt.seqNo) + delimiter + str(
-                pkt.index) + delimiter + pkt.msg
-    except:
-        print("Internal server error")
+            msg = "client info" + delimiter + self.cal_type + delimiter + str(self.packet_number)  ### 类型编码成整数，占用32位或8位。header可以固定。变长也可。
+            pkt = self.send_packet(msg, self.server_address)
 
-
-# Unpack data
-def unpack(file, address):
-    drop_count = 0
-    packet_count = 0
-    start_time = time.time()
-    pkt = Packet()
-
-    try:
-        data_list = open_file(file)
-
-        # Send packet number to proxy
-        while 1:
-            send_packet = sock.sendto(("packet num: " + delimiter + str(len(data_list))).encode(), address)
-            sock.settimeout(1)
             try:
-                ack, address = sock.recvfrom(size)
+                # Receive ACK from server
+                buf, address = self.sock.recvfrom(size)
             except:
-                print("Time out reached, resending...packet number")
+                print("Time out reached, resending...")
                 continue
-            if ack.decode().split(delimiter)[0] == "Ack: packet num: " \
-                    and ack.decode().split(delimiter)[1] == str(len(data_list)):
+            ack = Packet(0, 0, 0, 0, 0, buf)
+            ack.decode_seq()
+            if int(ack.msg) == pkt.seq + 1:
                 break
             else:
                 continue
 
-        x = 0
-        # Fragment and send data one by one
-        while x < len(data_list):
-            packet_count += 1
-            msg = data_list[x]
-            print(msg)
-            pkt.make(msg)
-            # pack
-            final_packet = str(pkt.checksum) + delimiter + str(pkt.seqNo) + delimiter + str(
-                pkt.index) + delimiter + pkt.msg
+    def send_packet(self, msg, address):
+        self.offset += 1
+        pkt = Packet(self.job_id, self.client_id, self.seq, self.offset, msg, 0)
+        self.seq += 1
+        pkt.encode_seq()
+        try:
+            self.sock.sendto(pkt.buf, address)
+        except:
+            logging.error("Fail to send packet")
+        return pkt
 
-            # Send packet
-            send_packet = sock.sendto(final_packet.encode(), address)
-            print("Sent %s bytes to %s, wait acknowledgment.." % (send_packet, address))
-            try:
-                # Receive ack from server
-                ack, address = sock.recvfrom(size)
-            except:
-                print("Time out reached, resending...package %s" % x)
-                continue
-            if ack.decode() == str(pkt.seqNo):
-                pkt.seqNo += 1
-                print("Acknowledged by: " + ack.decode() + "\nAcknowledged at: " + str(
-                    datetime.datetime.utcnow()) + "\nElapsed: " + str(time.time() - start_time) + "\n")
-                x += 1
-        print("Packets sended: " + str(packet_count))
-    except:
-        print("Internal server error")
+    # Receive result from server
+    def result_from_server(self):
+        result = ""
+        try:
+            # sock.sendto(("packet num: " + delimiter + str(len(data_list))).encode(), address)
+            self.sock.settimeout(4)
+            result, address = self.sock.recvfrom(size)
+        except:
+            print("Internal Server Error")
+        print(result.decode())
+
+    def run(self):
+        # Connection initiation
+        packet_index = -1
+        rwnd = 1000
+        while True:
+            if self.state == CLOSED:
+                logging.info("Handshaking...")
+                self.handshake()
+                userInput = "1 maximum test1.txt"
+                # userInput = input("\nInput file and Calculation type: ")
+                self.job_id = int(userInput.split(" ")[0])
+                self.cal_type = userInput.split(" ")[1]
+                self.file = userInput.split(" ")[2]
+                # print("Requesting the %s in file %s" % (userInput.split(" ")[1], userInput.split(" ")[2]))
+                print("Requesting the %s in file %s" % (self.cal_type, self.file))
+                self.send_basic_info()
+            elif self.state == LISTEN:
+                pass
+            elif self.state == CONNECTED:
+                # Send message
+                if packet_index < 0:
+                    packet_index = 0
+
+                # self.sock.sendto("Start sending".encode(), proxy_address)
+                # print(str(packet_index >= len(self.data_list)) + " " + str(self.packets_in_flight) + " " + str(
+                #     self.packets_retransmit))
+                if packet_index >= len(self.data_list) and self.packets_in_flight == {} and self.packets_retransmit == {}:
+                    # self.packets_in_flight.append((self.seq, t.time()))
+                    print("\nSend finish %s to proxy")
+                    # self.send_packet("finish", self.proxy_address)
+
+                # Send packets
+                if min(self.cwnd, rwnd) > len(self.packets_in_flight)\
+                        and (packet_index < len(self.data_list) or self.packets_retransmit != {}):
+                    while min(self.cwnd, rwnd) > len(self.packets_in_flight):
+
+                        # Retransmit
+                        if self.packets_retransmit != {}:
+                            for key in list(self.packets_retransmit.keys()):
+                                msg = str(self.data_list[key]) + delimiter + str(key)
+                                self.send_packet(msg, self.proxy_address)
+                                self.packets_in_flight[key] = {"seq": self.seq, "time": t.time()}
+                                self.packets_retransmit.pop(key)
+                                print("retransmit %s" % key)
+
+                        # Send packet
+                        if packet_index < len(self.data_list):
+                            self.packets_in_flight[packet_index] = {"seq": self.seq, "time": t.time()}  # 做成字典，效率高。
+                            print("Send to proxy: Packet index %s Seq %s" % (packet_index, str(int(self.seq))))
+                            msg = str(self.data_list[packet_index]) + delimiter + str(packet_index)
+                            self.send_packet(msg, self.proxy_address)
+                            packet_index += 1
+
+                # print("\nCurrent cwnd %s Packets in flight %s" % (self.cwnd, len(self.packets_in_flight)))
+
+                # Receive ack from proxy
+                try:
+                    ack, address = self.sock.recvfrom(size)
+                except:
+                    logging.error("The client does not receive ack from proxy")
+                pkt = Packet(0, 0, 0, 0, 0, ack)
+                pkt.decode_seq()
+                seq = int(pkt.msg.split(delimiter)[0]) - 1
+                send_time = 0
+                if self.packets_in_flight != {}:
+                    for key in self.packets_in_flight.keys():
+                        if seq == self.packets_in_flight[key]["seq"]:
+                            send_time = self.packets_in_flight[key]["time"]
+                            self.packets_in_flight.pop(key)
+                            rwnd = int(pkt.msg.split(delimiter)[1])
+                            print("\nAck: packet index %s" % int(pkt.msg.split(delimiter)[2]))
+                            break
+
+                    # Situation of losing packets
+                    for key in list(self.packets_in_flight.keys()):
+                        if t.time() - self.packets_in_flight[key]["time"] >= self.rto:
+                            self.packets_retransmit[key] = ""
+                            self.packets_in_flight.pop(key)
+                            self.time_this_lost = t.time()
+                            if self.time_this_lost - self.time_last_lost > self.srtt:
+                                self.cwnd = 3
+                                self.ssthresh = 1 / 2 * self.ssthresh
+                                self.time_last_lost = self.time_this_lost
+                            print("cwnd %s" % self.cwnd)
+                            print("Retransmit: packet index %s" % key)
+                        else:
+                            break
+
+                    # Slow start
+                    if self.cwnd < self.ssthresh:
+                        self.cwnd += 1
+                    # Congestion control
+                    else:
+                        self.cwnd += 1.0 / self.cwnd
+
+                    receive_time = t.time()
+                    rtt = receive_time - send_time
+                    # srtt, Jacobson / Karels algorithm
+                    if self.srtt < 0:
+                        # First time setting srtt
+                        self.srtt = rtt
+                        self.devrtt = rtt / 2
+                        self.rto = self.srtt + max(0.010, 4 * self.devrtt)
+                    else:
+                        alpha = 0.125
+                        beta = 0.25
+                        self.devrtt = (1 - beta) * self.devrtt + beta * abs(rtt - self.srtt)
+                        self.srtt = (1 - alpha) * self.srtt + alpha * rtt
+                        self.rto = self.srtt + max(0.010, 4 * self.devrtt)
+                        self.rto = max(self.rto, 1)  # Always round up RTO.
+                        self.rto = min(self.rto, 60)  # Maximum value 60 seconds.
+                        # print("rto: %s \n srtt : %s" % (self.rto, self.srtt))
 
 
-# Receive result from server
-def result_from_server():
-    result = ""
-    try:
-        # sock.sendto(("packet num: " + delimiter + str(len(data_list))).encode(), address)
-        sock.settimeout(4)
-        result, address = sock.recvfrom(size)
-    except:
-        print("Internal Server Error")
-    print(result.decode())
+
+                # send_msg = threading.Thread(target=self.send_msg)
+                # recv_msg = threading.Thread(target=self.recv_ack)
+                # send_msg.start()
+                # recv_msg.start()
+
+                # self.send_data(userInput.split(",")[0])
+            # self.result_from_server()
 
 
-# Connection initiation
-while 1:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(10)
-    server_address = (serverAddress, serverPort)
-    proxy_address = (proxyAddress, proxyPort)
-    if not handshake(server_address):
-        break
-    userInput = input("\nInput file: ")
-    try:
-        sock.sendto("Start sending".encode(), proxy_address)
-        print("Requesting the average in file %s" % userInput)
-        unpack(userInput, proxy_address)
-        result_from_server()
+if __name__ == '__main__':
+    client = Client1()
+    client.run()
 
-    finally:
-        print("Closing socket")
-        sock.close()
-        break
+    # finally:
+    #     print("Closing socket")
+    #     sock.close()
+    #     break

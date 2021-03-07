@@ -1,3 +1,4 @@
+import collections
 import socket
 import threading
 import hashlib
@@ -30,6 +31,19 @@ class Server:
         self.offset = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((serverAddress, serverPort))  # Bind the socket to the port
+
+        self.clients = collections.OrderedDict()
+
+    def send_packet(self, msg, address):
+        self.offset += 1
+        pkt = Packet(0, 0, self.seq, self.offset, msg, 0)
+        self.seq += 1
+        pkt.encode_seq()
+        try:
+            self.sock.sendto(pkt.buf, address)
+        except:
+            print("Fail to send packet")
+        return pkt
 
     # Three-way handshakes
     def handshake(self):
@@ -73,45 +87,23 @@ class Server:
                 return True
 
     # Receive basic information from client and send to proxy
-    def client_basic_info(self):
+    def client_basic_info(self, info, address):
         # Receive basic information from client
         connection_trails_count = 0
-        while 1:
-            buf, address = self.sock.recvfrom(size)
-            info = Packet(0, 0, 0, 0, 0, buf)
-            info.decode_seq()
-            # Send ACK to client
-            self.offset += 1
-            pkt = Packet(0, 0, self.seq, self.offset, info.seq + 1, 0)
-            pkt.encode_seq()
-            self.sock.sendto(pkt.buf, address)
-            self.seq += 1
-            job_id = info.msg.split(delimiter)[0]
-            cal_type = info.msg.split(delimiter)[1]
-            packet_number = info.msg.split(delimiter)[2]
-            client_seq = info.seq
-            # msg will include operation type, client address, client seq and size
-            msg = str(address) + delimiter + str(client_seq) + delimiter + job_id + delimiter + cal_type + delimiter + packet_number
+        client_seq = info.seq
+        cal_type = info.msg.split(delimiter)[1]
+        packet_number = info.msg.split(delimiter)[2]
+        self.clients["job id"] = info.job_id
+        self.clients["cal type"] = info.msg.split(delimiter)[1]
+        self.clients["packet number"] = info.msg.split(delimiter)[2]
 
-            # Send basic information to proxy
-            self.offset += 1
-            pkt = Packet(0, 0, self.seq, self.offset, msg, 0)
-            pkt.encode_seq()
-            self.sock.sendto(pkt.buf, proxy_address)
-            self.seq += 1
-            try:
-                ack, address = self.sock.recvfrom(size)
-            except:
-                print("Time out reached, resending...packet number")
-                continue
-            ack = Packet(0, 0, 0, 0, 0, ack)
-            ack.decode_seq()
-            if int(ack.msg) == pkt.seq + 1:
-                print("ok")
-                break
-            else:
-                continue
-        return cal_type
+        # Send basic information to proxy
+        # msg will include operation type, client address, client seq and size
+        msg = str(address) + delimiter + str(client_seq) + delimiter + str(info.job_id) + delimiter + str(info.client_id) + \
+              delimiter + cal_type + delimiter + packet_number
+        self.clients[info.client_id]["server seq"] = self.seq
+        self.clients[info.client_id]["client seq"] = info.seq
+        self.send_packet(msg, proxy_address)
 
     # Receive result from proxy
     def receive_from_proxy(self):
@@ -159,19 +151,42 @@ class Server:
 
     def run(self):
         print("Starting up on %s port %s" % (serverAddress, serverPort))
+        print("\nWaiting to receive message")
         # Listening for requests indefinitely
         while True:
             # Start - Connection initiation
-            print("Starting up on %s port %s" % (serverAddress, serverPort))
-            print("\nWaiting to receive message")
-            if not self.handshake():
-                break
-            calculation_type = self.client_basic_info()
-            self.receive_from_proxy()
-            if len(data_list) == 1:
-                self.calculate(calculation_type)
+            recv, address = self.sock.recvfrom(size)
+            decode_pkt = Packet(0, 0, 0, 0, 0, recv)
+            decode_pkt.decode_seq()
+            # First and Second Handshake
+            if "syn" in decode_pkt.msg and str(1) in decode_pkt.msg:
+                msg = "ack number" + delimiter + str(decode_pkt.seq + 1) + delimiter + "syn" + delimiter + str(1) + \
+                      delimiter + "ack" + delimiter + str(1)
+                self.send_packet(msg, address)
+                server_seq = self.seq - 1
+                self.clients[decode_pkt.client_id] = {"address": address, "server seq": server_seq - 1}
+            # Third handshake
+            elif "client ack" in decode_pkt.msg and decode_pkt.msg.split(delimiter)[1] ==1:
+                last_seq = int(decode_pkt.msg.split(delimiter)[3])
+                if self.clients[decode_pkt.client_id]["server seq"] + 1 == last_seq:
+                    self.clients[decode_pkt.client_id]["state"] = "connected"
+
+            # Receive client basic information
+            elif "client info" in decode_pkt.msg:
+                self.client_basic_info(decode_pkt, address)
+            elif "proxy ack" in decode_pkt.msg:
+                client_id = int(decode_pkt.msg.split(delimiter)[1])
+                if int(decode_pkt.msg.split(delimiter)[2]) == self.clients[client_id]["server seq"] + 1:
+                    # Send Ack to client
+                    self.send_packet(self.clients[client_id]["client seq"] + 1, self.clients[client_id]["address"])
+                    print("okkk")
+            # calculation_type = self.client_basic_info()
+            # self.receive_from_proxy()
+            # if len(data_list) == 1:
+            #     self.calculate(calculation_type)
             # connectionThread = threading.Thread(target=handle_connection)
             # connectionThread.start()
+
 
     # def multithread(self):
     #     for i in range(0, 19):

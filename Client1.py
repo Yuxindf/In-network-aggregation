@@ -43,6 +43,7 @@ logging.basicConfig(format='[%(asctime)s.%(msecs)03d] CLIENT - %(levelname)s: %(
 
 class Client1:
     def __init__(self):
+        self.client_id = 1
         # Client Initial State
         self.job_id = 0
         self.seq = random.randrange(1024)  # The current sequence number
@@ -78,15 +79,15 @@ class Client1:
     # Three-way handshakes
     def handshake(self):
         connection_trails_count = 0
-        while 1:
+        while True:
             print("Connect with Server " + str(serverAddress) + " " + str(serverPort))
             # first handshake
             syn = 1
-            try:
-                msg = "syn" + delimiter + str(syn)
-                pkt = self.send_packet(msg, self.server_address)
-            except:
-                logging.error("Cannot send message")
+            # try:
+            msg = "syn" + delimiter + str(syn)
+            pkt = self.send_packet(msg, self.server_address)
+            # except:
+            #     logging.error("Cannot send message")
             try:
                 ack, address = self.sock.recvfrom(size)
             except:
@@ -104,10 +105,10 @@ class Client1:
                     and int(from_server.msg.split(delimiter)[1]) == pkt.seq + 1 \
                     and from_server.msg.split(delimiter)[2] == "syn" and int(from_server.msg.split(delimiter)[3]) == 1\
                     and from_server.msg.split(delimiter)[4] == "ack" and int(from_server.msg.split(delimiter)[5]) == 1:
-                msg = "ack" + delimiter + str(1) + delimiter + "seq" + delimiter + str(from_server.seq + 1)
+                msg = "client ack" + delimiter + str(1) + delimiter + "seq" + delimiter + str(from_server.seq + 1)
                 self.send_packet(msg, address)
                 self.state = CONNECTED
-                return True
+                break
 
     def open_file(self):
         try:
@@ -130,7 +131,7 @@ class Client1:
             self.packet_number = len(self.data_list)
             # Send basic information to server
             # msg will include operation type, data size...
-            msg = str(self.job_id) + delimiter + self.cal_type + delimiter + str(self.packet_number)  ### 类型编码成整数，占用32位或8位。header可以固定。变长也可。
+            msg = "client info" + delimiter + self.cal_type + delimiter + str(self.packet_number)  ### 类型编码成整数，占用32位或8位。header可以固定。变长也可。
             pkt = self.send_packet(msg, self.server_address)
 
             try:
@@ -142,24 +143,13 @@ class Client1:
             ack = Packet(0, 0, 0, 0, 0, buf)
             ack.decode_seq()
             if int(ack.msg) == pkt.seq + 1:
-                try:
-                    # Receive ACK from proxy
-                    buf, address = self.sock.recvfrom(size)
-                except:
-                    print("Time out reached, resending...")
-                    continue
-                ack = Packet(0, 0, 0, 0, 0, buf)
-                ack.decode_seq()
-                if int(ack.msg) == pkt.seq + 1:
-                    break
-                else:
-                    continue
+                break
             else:
                 continue
 
     def send_packet(self, msg, address):
         self.offset += 1
-        pkt = Packet(self.job_id, self.index, self.seq, self.offset, msg, 0)
+        pkt = Packet(self.job_id, self.client_id, self.seq, self.offset, msg, 0)
         self.seq += 1
         pkt.encode_seq()
         try:

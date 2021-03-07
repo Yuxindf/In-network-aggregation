@@ -1,4 +1,5 @@
 # udp server
+import collections
 import numpy as np
 import socket
 import hashlib
@@ -29,15 +30,23 @@ class Proxy:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((host, proxy_port))
 
+        self.clients = collections.OrderedDict()
+
         # Client basic information
-        self.job_id = 0
-        self.index = 0
-        self.client_address = 0  # Connecting client address
-        self.packet_number = 0  # Packet number
-        self.cal_type = 0  # calculation type
 
         # flow control
         self.rwnd = 1000
+
+    def send_packet(self, msg, address):
+        self.offset += 1
+        pkt = Packet(0, 0, self.seq, self.offset, msg, 0)
+        self.seq += 1
+        pkt.encode_seq()
+        try:
+            self.sock.sendto(pkt.buf, address)
+        except:
+            print("Fail to send packet")
+        return pkt
 
     # Receive basic information of client from server and send ACK to server and client
     def client_basic_info(self):
@@ -58,33 +67,22 @@ class Proxy:
         info = Packet(0, 0, 0, 0, 0, info)
         info.decode_seq()
         tmp = info.msg  # Client Basic Information
+        # Obtain calculation type and packet number
+        job_id = int(tmp.split(delimiter)[2])
+        client_id = int(tmp.split(delimiter)[3])
+        cal_type = tmp.split(delimiter)[4]
+        packet_number = int(tmp.split(delimiter)[5])
         # Send Ack to Server
-        self.offset += 1
-        pkt = Packet(0, 0, self.seq, self.offset, info.seq + 1, 0)
-        pkt.encode_seq()
-        self.sock.sendto(pkt.buf, address)
-        self.seq += 1
-        # Send Ack to Client
-        msg = int(tmp.split(delimiter)[1]) + 1  # sequence number of client plus 1
-        self.offset += 1
-        pkt = Packet(0, 0, self.seq, self.offset, msg, 0)
-        pkt.encode_seq()
+        msg = "proxy ack" + delimiter + str(client_id) + delimiter + str(info.seq + 1)
+        self.send_packet(msg, address)
         # obtain client address
         c = tmp.split(delimiter)[0]
         client_address = str(c[1:-1].split(", ")[0][1:-1])
         client_port = c[1:-1].split(", ")[1]
         client_address = (client_address, int(client_port))
-        self.sock.sendto(pkt.buf, client_address)
-        self.seq += 1
-        # Obtain calculation type and packet number
-        job_id = tmp.split(delimiter)[2]
-        cal_type = tmp.split(delimiter)[3]
-        packet_number = tmp.split(delimiter)[4]
         print("Receive basic information of a client %s " % c)
-        print("Calculation type is %s \nNumber of Packets is %s" % (tmp.split(delimiter)[3], tmp.split(delimiter)[4]))
-        client_info.append(str(client_address) + delimiter + str(job_id) + delimiter + cal_type + delimiter + str(packet_number))
-        print(int(tmp.split(delimiter)[1]))
-        return int(tmp.split(delimiter)[1])
+        print("Calculation type is %s \nNumber of Packets is %s" % (cal_type, packet_number))
+        self.clients[client_id] = {"address": client_address, "job id": job_id, "cal type": cal_type, "packet number": packet_number}
 
     # Receive data from client and send ACK back
     def recv_data(self, seq):
@@ -122,12 +120,11 @@ class Proxy:
                 msg = str(pkt.seq + 1) + "finish"
             else:
                 packet_index = pkt.msg.split(delimiter)[1]
-
                 print(float(pkt.msg.split(delimiter)[0]))
                 data_list = np.append(data_list, float(pkt.msg.split(delimiter)[0]))
             self.offset += 1
             msg = str(pkt.seq + 1) + delimiter + str(self.rwnd) + delimiter + str(packet_index)
-            ack_pkt = Packet(self.job_id, 0, self.seq, self.offset, msg, 0)
+            ack_pkt = Packet(0, 0, self.seq, self.offset, msg, 0)
             ack_pkt.encode_seq()
             self.sock.sendto(ack_pkt.buf, client_address)
             self.seq += 1
