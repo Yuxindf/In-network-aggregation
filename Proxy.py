@@ -5,11 +5,13 @@ import socket
 import hashlib
 import os
 import random
+import threading
 from Packet import Packet
 
 host = '127.0.0.1'
 proxy_port = 6001  # Proxy Port
 server_port = 10000  # Map to Serer Port
+server_address = (host, server_port)
 
 wait_ack_list = []
 result_list = []
@@ -31,6 +33,9 @@ class Proxy:
         self.sock.bind((host, proxy_port))
 
         self.clients = collections.OrderedDict()
+        self.data = collections.OrderedDict()
+        self.calculate = collections.OrderedDict()
+        self.send_aggregation = collections.OrderedDict()
 
         # Client basic information
 
@@ -69,32 +74,42 @@ class Proxy:
         self.clients[client_id] = {"address": client_address, "job id": job_id, "cal type": cal_type, "packet number": packet_number}
 
     # Receive data from client and send ACK back
-    def recv_data(self, data, address):
+    def recv_data(self, pkt, address):
         # The file is to make a backup
         f = open("new_test1.txt", 'w')
         seq_no_flag = 1
         data_list = []
-
         # Send Ack to Client
-        if data.msg == "finish":
-            msg = str(data.seq + 1) + "finish"
+        if "finish" not in pkt.msg:
+            # Initialize
+            if pkt.client_id not in self.data.keys():
+                self.data[pkt.client_id] = {"data": []}
+            packet_index = int(pkt.msg.split(delimiter)[2])
+            data = pkt.msg.split(delimiter)[1]
+            # Weighted average
+            if self.clients[pkt.client_id]["cal type"] == "average":
+                number = float(data[1:-1].split(",")[0])
+                weight = float(data[1:-1].split(",")[1])
+                data = (number, weight)
+                self.data[pkt.client_id]["data"].append(data)
+            # Maximum or Minimum
+            else:
+                data = float(data)
+                self.data[pkt.client_id]["data"] = np.append(self.data[pkt.client_id]["data"], data)
+            msg = str(pkt.seq + 1) + delimiter + str(self.rwnd) + delimiter + str(packet_index)
+            self.send_packet(msg, address)
+            print("Receive packet %s from Client %s, sending ack..." % (packet_index, address))
+
         else:
-            packet_index = data.msg.split(delimiter)[2]
-            print(float(data.msg.split(delimiter)[1]))
-            data_list = np.append(data_list, float(data.msg.split(delimiter)[1]))
-        self.offset += 1
-        msg = str(data.seq + 1) + delimiter + str(self.rwnd) + delimiter + str(packet_index)
-        ack_pkt = Packet(0, 0, self.seq, self.offset, msg, 0)
-        ack_pkt.encode_seq()
-        self.sock.sendto(ack_pkt.buf, address)
-        self.seq += 1
-        print("Receive packet %s from Client %s, sending ack..." % (data.seq, address))
-        if data.msg == "finish":
+            msg = str(pkt.seq + 1) + "finish"
             print("Receive all packets from client")
+            self.send_packet(msg, address)
+            self.calculate[pkt.client_id] = {}
+            print(self.data)
 
     # 带权平均，packet header可以带一个权重，默认为1。server那里可知，做到全局平均。
     # do some calculations
-    def calculate(self, index, data_list):
+    def aggregate(self):
         # with open("new_test1.txt", "r") as f:
         #     for line in f:
         #         word_list = line.split(space)
@@ -102,17 +117,23 @@ class Proxy:
         #             if int(index) == int(a.split(delimiter)[1]):
         #
         # f.close()
-        ans = 0
-        if self.cal_type == "maximum":
-            ans = data_list.max()
-        elif self.cal_type == "minimum":
-            ans = data_list.min()
-        elif self.cal_type == "weighted average":
-            sum = 0
-            for i in data_list[::-1]:
-                sum += data_list[i]
-            ans = sum/len(data_list)
-        return ans
+        if self.calculate != {}:
+            for key in self.calculate.keys():
+                if self.clients[key]["cal type"] == "maximum":
+                    ans = self.data[key]["data"].max()
+                elif self.clients[key]["cal type"] == "minimum":
+                    ans = self.data[key]["data"].min()
+                elif self.clients[key]["cal type"] == "average":
+                    sum = 0
+                    for i in self.data[key]["data"]:
+                       sum += i[0] * i[1]
+                    ans = sum / len(self.data[key]["data"])
+                print(ans)
+                self.send_aggregation[key] = {"result": ans}
+                msg = "aggregation result" + delimiter + str(key) + delimiter + str(ans)
+                self.send_packet(msg, server_address)
+                self.calculate.pop(key)
+
 
     def send_to_server(self):
 
@@ -127,9 +148,7 @@ class Proxy:
 
     def run(self):
         print("Proxy start up on %s port %s\n" % (host, proxy_port))
-        print(host + " Client connect to Server %s\n" % server_port)
         while 1:
-            print("\nWaiting to receive message")
             recv, address = self.sock.recvfrom(size)
             decoded_pkt = Packet(0, 0, 0, 0, 0, recv)
             decoded_pkt.decode_seq()
@@ -137,6 +156,9 @@ class Proxy:
                 self.client_basic_info(decoded_pkt, address)
             elif "data" in decoded_pkt.msg:
                 self.recv_data(decoded_pkt, address)
+                self.aggregate()
+
+
 
 
             # self.send_to_server()
