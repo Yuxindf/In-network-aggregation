@@ -1,10 +1,7 @@
 import collections
 import numpy as np
 import socket
-import threading
-import hashlib
-import time
-import os
+from threading import Timer
 import random
 import time as t
 from Packet import Packet, tmp_pkt
@@ -25,6 +22,13 @@ space = "|#|#|"
 size = 200
 data_list = []
 client_list = []
+
+
+class RepeatingTimer(Timer):
+    def run(self):
+        while not self.finished.is_set():
+            self.function(*self.args, **self.kwargs)
+            self.finished.wait(self.interval)
 
 
 class Server:
@@ -70,7 +74,7 @@ class Server:
         self.send_packet(msg, proxy_address)
 
     # do some calculations
-    def send_result(self, pkt):
+    def obtain_aggregation_result(self, pkt):
         # Obtain information
         client_id = int(pkt.msg.split(delimiter)[1])
         data = float(pkt.msg.split(delimiter)[2])
@@ -90,33 +94,49 @@ class Server:
             self.result_from_proxy[job_id]["data"].append((data, weight))
         else:
             self.result_from_proxy[job_id]["data"] = np.append(self.result_from_proxy[job_id]["data"], data)
+
+    def calculate(self, key):
+        cal_type = self.result_from_proxy[key]["cal type"]
+        if cal_type == "maximum":
+            ans = self.result_from_proxy[key]["data"].max()
+        elif cal_type == "minimum":
+            ans = self.result_from_proxy[key]["data"].min()
+        elif cal_type == "average":
+            sum = 0
+            number = len(self.result_from_proxy[key]["data"])
+            for i in self.result_from_proxy[key]["data"]:
+                data = i[0]
+                weight = i[1]
+                sum += data * weight
+            ans = sum / number
+        for id in self.clients_wait_fin.keys():
+            self.send_packet(ans, self.clients[id]["address"])
+            print("Sending result to client (%s, %s)" % self.clients[id]["address"])
+            fin_ack_number = self.clients_wait_fin[id]["fin ack number"]
+            msg = "FIN" + delimiter + str(1) + delimiter + "ACK" + delimiter + str(1) \
+                  + delimiter + "ack number" + delimiter + str(fin_ack_number)
+            self.clients_wait_fin[id]["server seq"] = self.seq
+            self.send_packet(msg, self.clients[id]["address"])
+        self.result_from_proxy.pop(key)
+
+    def send_final_result(self):
         for key in self.result_from_proxy.keys():
             if len(self.result_from_proxy[key]["client id"]) == 2:
-                cal_type = self.result_from_proxy[key]["cal type"]
-                if cal_type == "maximum":
-                    ans = self.result_from_proxy[key]["data"].max()
-                elif cal_type == "minimum":
-                    ans = self.result_from_proxy[key]["data"].min()
-                elif cal_type == "average":
-                    sum = 0
-                    number = len(self.result_from_proxy[key]["data"])
-                    for i in self.result_from_proxy[key]["data"]:
-                        data = i[0]
-                        weight = i[1]
-                        sum += data * weight
-                    ans = sum / number
-                for id in self.clients_wait_fin.keys():
-                    self.send_packet(ans, self.clients[id]["address"])
-                    fin_ack_number = self.clients_wait_fin[id]["fin ack number"]
-                    msg = "FIN" + delimiter + str(1) + delimiter + "ACK" + delimiter + str(1) \
-                        + delimiter + "ack number" + delimiter + str(fin_ack_number)
-                    self.clients_wait_fin[id]["server seq"] = self.seq
-                    self.send_packet(msg, self.clients[id]["address"])
-                self.result_from_proxy.pop(key)
+                self.calculate(key)
+
+    def monitor_job(self):
+        for key in self.result_from_proxy.keys():
+            if t.time() - self.result_from_proxy[key]["time"] > 5:
+                self.calculate(key)
+            else:
+                break
 
     def run(self):
         print("Starting up on %s port %s" % (serverAddress, serverPort))
         print("\nWaiting to receive message")
+        timer = RepeatingTimer(10.0, self.monitor_job)
+        timer.start()
+        # Timer(2, self.ru, ()).start()
         # Listening for requests indefinitely
         while True:
             # Start - Connection initiation
@@ -135,6 +155,7 @@ class Server:
                 last_seq = int(decoded_pkt.msg.split(delimiter)[3])
                 if self.clients[decoded_pkt.client_id]["server seq"] + 1 == last_seq:
                     self.clients[decoded_pkt.client_id]["state"] = "connected"
+                    print("Connected with client (%s, %s)" % address)
 
             # Receive client basic information
             elif "client info" in decoded_pkt.msg:
@@ -152,7 +173,9 @@ class Server:
                 self.clients_wait_fin[decoded_pkt.client_id] = {"fin ack number": decoded_pkt.seq + 1}
 
             elif "aggregation result" in decoded_pkt.msg:
-                self.send_result(decoded_pkt)
+                print("Receive one aggregation result of job %s from proxy" % decoded_pkt.msg.split(delimiter)[1])
+                self.obtain_aggregation_result(decoded_pkt)
+                self.send_final_result()
 
             elif decoded_pkt.msg.split(delimiter)[0] == "FIN ACK" and int(decoded_pkt.msg.split(delimiter)[1]) == 1:
                 for i in self.clients_wait_fin.keys():
@@ -160,9 +183,8 @@ class Server:
                         if self.clients_wait_fin[i]["server seq"] + 1 == int(decoded_pkt.msg.split(delimiter)[3]):
                             self.clients.pop(i)
                             self.clients_wait_fin.pop(i)
-                            # print(self.clients)
+                            print("Disconnect with client (%s, %s)" % address)
                             break
-                print(self.clients)
 
 
 if __name__ == '__main__':

@@ -3,9 +3,6 @@ from Packet import Packet
 
 import collections
 import socket
-import numpy as np
-import threading
-import queue
 import random
 import time as t
 import logging
@@ -46,7 +43,7 @@ class Client1:
     def __init__(self):
         self.client_id = 1
         # Client Initial State
-        self.job_id = 1
+        self.job_id = 0
         self.seq = random.randrange(1024)  # The current sequence number
         self.index = 1
         self.offset = 0
@@ -188,57 +185,13 @@ class Client1:
                 # Send packet
                 if self.packet_index < len(self.data_list):
                     self.packets_in_flight[self.packet_index] = {"seq": self.seq, "time": t.time()}  # 做成字典，效率高。
-                    print("Send to proxy: Packet index %s Seq %s" % (self.packet_index, str(int(self.seq))))
+                    # print("Send to proxy: Packet index %s Seq %s" % (self.packet_index, str(int(self.seq))))
+                    # print(self.packets_in_flight.keys())
                     msg = "data" + delimiter + str(self.data_list[self.packet_index]) + delimiter + str(self.packet_index)
                     self.send_packet(msg, self.proxy_address)
                     self.packet_index += 1
 
         # print("\nCurrent cwnd %s Packets in flight %s" % (self.cwnd, len(self.packets_in_flight)))
-
-    # Receive result from server and four waves
-    def disconnect(self):
-        connection_trails_count = 0
-        while True:
-            # First wave
-            msg = "FIN" + delimiter + str(1)
-            self.send_packet(msg, self.server_address)
-            try:
-                ack, address = self.sock.recvfrom(size)
-            except:
-                connection_trails_count += 1
-                if connection_trails_count < 5:
-                    print("\nConnection time out, retrying")
-                    continue
-                else:
-                    print("\nMaximum connection trails reached, skipping request\n")
-                    return False
-            pkt = Packet(0, 0, 0, 0, 0, ack)
-            pkt.decode_seq()
-            # Second wave
-            if pkt.msg.split(delimiter)[0] == "FIN ACK" and int(pkt.msg.split(delimiter)[1]) == 1 \
-                    and pkt.msg.split(delimiter)[2] == "ack number" and int(pkt.msg.split(delimiter)[3]) == self.seq:
-                break
-            else:
-                continue
-        # Receive final result from server
-        result, address = self.sock.recvfrom(size)
-        pkt = Packet(0, 0, 0, 0, 0, result)
-        pkt.decode_seq()
-        result = pkt.msg
-        print("Final result %s" % result)
-
-        fin, address = self.sock.recvfrom(size)
-        pkt = Packet(0, 0, 0, 0, 0, fin)
-        pkt.decode_seq()
-        # Third wave
-        if pkt.msg.split(delimiter)[0] == "FIN" and int(pkt.msg.split(delimiter)[1]) == 1 \
-                and pkt.msg.split(delimiter)[2] == "ACK" and int(pkt.msg.split(delimiter)[3]) == 1 \
-                and pkt.msg.split(delimiter)[4] == "ack number" and int(pkt.msg.split(delimiter)[5]) == self.seq:
-            msg = "FIN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(pkt.seq + 1)
-            # Fourth wave
-            self.send_packet(msg, address)
-            self.sock.close()
-            print("close socket")
 
     def receive_ack(self):
         # Receive ack from proxy
@@ -258,8 +211,8 @@ class Client1:
                         send_time = self.packets_in_flight[key]["time"]
                         self.packets_in_flight.pop(key)
                         rwnd = int(pkt.msg.split(delimiter)[1])
-                        print("\nAck: packet index %s" % key)
-                        print(self.packets_in_flight.keys())
+                        # print("\nAck: packet index %s" % key)
+                        # print(self.packets_in_flight.keys())
                         # Slow start
                         if self.cwnd < self.ssthresh:
                             self.cwnd += 1
@@ -304,6 +257,52 @@ class Client1:
         else:
             self.state = FIN
 
+    # Receive result from server and four waves
+    def disconnect(self):
+        connection_trails_count = 0
+        while True:
+            # First wave
+            msg = "FIN" + delimiter + str(1)
+            self.send_packet(msg, self.server_address)
+            try:
+                ack, address = self.sock.recvfrom(size)
+            except:
+                connection_trails_count += 1
+                if connection_trails_count < 5:
+                    print("\nConnection time out, retrying")
+                    continue
+                else:
+                    print("\nMaximum connection trails reached, skipping request\n")
+                    return False
+            pkt = Packet(0, 0, 0, 0, 0, ack)
+            pkt.decode_seq()
+            # Second wave
+            if pkt.msg.split(delimiter)[0] == "FIN ACK" and int(pkt.msg.split(delimiter)[1]) == 1 \
+                    and pkt.msg.split(delimiter)[2] == "ack number" and int(pkt.msg.split(delimiter)[3]) == self.seq:
+                break
+            else:
+                continue
+        # Receive final result from server
+        result, address = self.sock.recvfrom(size)
+        pkt = Packet(0, 0, 0, 0, 0, result)
+        pkt.decode_seq()
+        result = pkt.msg
+        print("Final result %s" % result)
+
+        fin, address = self.sock.recvfrom(size)
+        pkt = Packet(0, 0, 0, 0, 0, fin)
+        pkt.decode_seq()
+        # Third wave
+        if pkt.msg.split(delimiter)[0] == "FIN" and int(pkt.msg.split(delimiter)[1]) == 1 \
+                and pkt.msg.split(delimiter)[2] == "ACK" and int(pkt.msg.split(delimiter)[3]) == 1 \
+                and pkt.msg.split(delimiter)[4] == "ack number" and int(pkt.msg.split(delimiter)[5]) == self.seq:
+            msg = "FIN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(pkt.seq + 1)
+            # Fourth wave
+            self.send_packet(msg, address)
+            t.sleep(0.002)
+            self.sock.close()
+            print("close socket")
+
     def run(self):
         # Connection initiation
         count = 0
@@ -311,7 +310,8 @@ class Client1:
             if self.state == CLOSED:
                 logging.info("Handshaking...")
                 self.handshake()
-                userInput = "1 average test2.txt 0.1"
+                userInput = "1 minimum test1.txt"
+                # userInput = "1 average test2.txt 0.1"
                 # userInput = input("\nInput file and Calculation type: ")
                 self.job_id = int(userInput.split(" ")[0])
                 self.cal_type = userInput.split(" ")[1]

@@ -98,11 +98,11 @@ class Proxy:
                 self.data[pkt.client_id]["data"] = np.append(self.data[pkt.client_id]["data"], data)
             msg = str(pkt.seq + 1) + delimiter + str(self.rwnd) + delimiter + str(packet_index)
             self.send_packet(msg, address)
-            print("Receive packet %s from Client %s, sending ack..." % (packet_index, address))
+            # print("Receive packet %s from Client %s, sending ack..." % (packet_index, address))
 
         else:
             msg = str(pkt.seq + 1) + "finish"
-            print("Receive all packets from client")
+            print("Receive all packets from client (%s, %s)" % address)
             self.send_packet(msg, address)
             self.calculate[pkt.client_id] = {}
             print(self.data)
@@ -134,18 +134,6 @@ class Proxy:
                 self.send_packet(msg, server_address)
                 self.calculate.pop(key)
 
-
-    def send_to_server(self):
-
-        ave = self.calculate(self.index)
-        packet = str(self.client_address) + delimiter + str(ave)
-        server_address = (host, server_port)
-        try:
-            print("Send to server")
-            self.sock.sendto(packet.encode(), server_address)
-        except:
-            print("Internal Server Error")
-
     def run(self):
         print("Proxy start up on %s port %s\n" % (host, proxy_port))
         while 1:
@@ -157,11 +145,6 @@ class Proxy:
             elif "data" in decoded_pkt.msg:
                 self.recv_data(decoded_pkt, address)
                 self.aggregate()
-
-
-
-
-            # self.send_to_server()
 
 
 if __name__ == '__main__':
