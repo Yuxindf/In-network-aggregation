@@ -36,6 +36,7 @@ class Server:
 
         self.clients = collections.OrderedDict()
         self.result_from_proxy = collections.OrderedDict()
+        self.clients_wait_fin = collections.OrderedDict()
 
     def send_packet(self, msg, address):
         self.offset += 1
@@ -87,7 +88,6 @@ class Server:
         if "weight" in self.clients[client_id].keys():
             weight = self.clients[client_id]["weight"]
             self.result_from_proxy[job_id]["data"].append((data, weight))
-            print(self.result_from_proxy[job_id]["data"])
         else:
             self.result_from_proxy[job_id]["data"] = np.append(self.result_from_proxy[job_id]["data"], data)
         for key in self.result_from_proxy.keys():
@@ -101,16 +101,17 @@ class Server:
                     sum = 0
                     number = len(self.result_from_proxy[key]["data"])
                     for i in self.result_from_proxy[key]["data"]:
-                        # print(i)
                         data = i[0]
                         weight = i[1]
-                        # print(data)
-                        # print(weight)
                         sum += data * weight
                     ans = sum / number
-                for address in self.result_from_proxy[key]["client address"]:
-                    self.send_packet(ans, address)
-                    print(address)
+                for id in self.clients_wait_fin.keys():
+                    self.send_packet(ans, self.clients[id]["address"])
+                    fin_ack_number = self.clients_wait_fin[id]["fin ack number"]
+                    msg = "FIN" + delimiter + str(1) + delimiter + "ACK" + delimiter + str(1) \
+                        + delimiter + "ack number" + delimiter + str(fin_ack_number)
+                    self.clients_wait_fin[id]["server seq"] = self.seq
+                    self.send_packet(msg, self.clients[id]["address"])
                 self.result_from_proxy.pop(key)
 
     def run(self):
@@ -123,14 +124,14 @@ class Server:
             decoded_pkt = Packet(0, 0, 0, 0, 0, recv)
             decoded_pkt.decode_seq()
             # First and Second Handshake
-            if "syn" in decoded_pkt.msg and str(1) in decoded_pkt.msg:
-                msg = "ack number" + delimiter + str(decoded_pkt.seq + 1) + delimiter + "syn" + delimiter + str(1) + \
-                      delimiter + "ack" + delimiter + str(1)
+            if decoded_pkt.msg.split(delimiter)[0] == "SYN" and str(1) in decoded_pkt.msg:
+                msg = "ack number" + delimiter + str(decoded_pkt.seq + 1) + delimiter + "SYN" + delimiter + str(1) + \
+                      delimiter + "ACK" + delimiter + str(1)
                 self.send_packet(msg, address)
                 self.clients[decoded_pkt.client_id] = {"address": address, "server seq": self.seq - 1}
 
             # Third handshake
-            elif "handshake ack" in decoded_pkt.msg and int(decoded_pkt.msg.split(delimiter)[1]) ==1:
+            elif decoded_pkt.msg.split(delimiter)[0] == "SYN ACK" and int(decoded_pkt.msg.split(delimiter)[1]) ==1:
                 last_seq = int(decoded_pkt.msg.split(delimiter)[3])
                 if self.clients[decoded_pkt.client_id]["server seq"] + 1 == last_seq:
                     self.clients[decoded_pkt.client_id]["state"] = "connected"
@@ -138,13 +139,30 @@ class Server:
             # Receive client basic information
             elif "client info" in decoded_pkt.msg:
                 self.client_basic_info(decoded_pkt, address)
+
             elif "proxy ack" in decoded_pkt.msg:
                 client_id = int(decoded_pkt.msg.split(delimiter)[1])
                 if int(decoded_pkt.msg.split(delimiter)[2]) == self.clients[client_id]["server seq"] + 1:
                     # Send Ack to client
                     self.send_packet(self.clients[client_id]["client seq"] + 1, self.clients[client_id]["address"])
+
+            elif decoded_pkt.msg.split(delimiter)[0] == "FIN" and int(decoded_pkt.msg.split(delimiter)[1]) == 1:
+                msg = "FIN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(decoded_pkt.seq + 1)
+                self.send_packet(msg, address)
+                self.clients_wait_fin[decoded_pkt.client_id] = {"fin ack number": decoded_pkt.seq + 1}
+
             elif "aggregation result" in decoded_pkt.msg:
                 self.send_result(decoded_pkt)
+
+            elif decoded_pkt.msg.split(delimiter)[0] == "FIN ACK" and int(decoded_pkt.msg.split(delimiter)[1]) == 1:
+                for i in self.clients_wait_fin.keys():
+                    if self.clients[i]["address"] == address:
+                        if self.clients_wait_fin[i]["server seq"] + 1 == int(decoded_pkt.msg.split(delimiter)[3]):
+                            self.clients.pop(i)
+                            self.clients_wait_fin.pop(i)
+                            # print(self.clients)
+                            break
+                print(self.clients)
 
 
 if __name__ == '__main__':

@@ -27,7 +27,7 @@ size = 200
 CLOSED = 1
 LISTEN = 2
 CONNECTED = 3
-WAIT = 4
+FIN = 4
 
 logging.basicConfig(format='[%(asctime)s.%(msecs)03d] CLIENT - %(levelname)s: %(message)s',
                     datefmt='%H:%M:%S', filename='network.log', level=logging.INFO)
@@ -87,7 +87,7 @@ class Client2:
             # first handshake
             syn = 1
             # try:
-            msg = "syn" + delimiter + str(syn)
+            msg = "SYN" + delimiter + str(syn)
             pkt = self.send_packet(msg, self.server_address)
             # except:
             #     logging.error("Cannot send message")
@@ -106,9 +106,9 @@ class Client2:
             # Third handshake
             if from_server.msg.split(delimiter)[0] == "ack number" \
                     and int(from_server.msg.split(delimiter)[1]) == pkt.seq + 1 \
-                    and from_server.msg.split(delimiter)[2] == "syn" and int(from_server.msg.split(delimiter)[3]) == 1\
-                    and from_server.msg.split(delimiter)[4] == "ack" and int(from_server.msg.split(delimiter)[5]) == 1:
-                msg = "handshake ack" + delimiter + str(1) + delimiter + "seq" + delimiter + str(from_server.seq + 1)
+                    and from_server.msg.split(delimiter)[2] == "SYN" and int(from_server.msg.split(delimiter)[3]) == 1\
+                    and from_server.msg.split(delimiter)[4] == "ACK" and int(from_server.msg.split(delimiter)[5]) == 1:
+                msg = "SYN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(from_server.seq + 1)
                 self.send_packet(msg, address)
                 self.state = CONNECTED
                 break
@@ -164,17 +164,6 @@ class Client2:
             logging.error("Fail to send packet")
         return pkt
 
-    # Receive result from server
-    def result_from_server(self):
-        result = ""
-        try:
-            # sock.sendto(("packet num: " + delimiter + str(len(data_list))).encode(), address)
-            self.sock.settimeout(4)
-            result, address = self.sock.recvfrom(size)
-        except:
-            print("Internal Server Error")
-        print(result.decode())
-
     def send_data(self):
         # Send message
         if self.packet_index >= len(self.data_list) and (self.packets_in_flight == {} or self.packets_retransmit != {}):
@@ -205,6 +194,52 @@ class Client2:
                     self.packet_index += 1
 
         # print("\nCurrent cwnd %s Packets in flight %s" % (self.cwnd, len(self.packets_in_flight)))
+
+    # Receive result from server and four waves
+    def disconnect(self):
+        connection_trails_count = 0
+        while True:
+            # First wave
+            msg = "FIN" + delimiter + str(1)
+            self.send_packet(msg, self.server_address)
+            try:
+                ack, address = self.sock.recvfrom(size)
+            except:
+                connection_trails_count += 1
+                if connection_trails_count < 5:
+                    print("\nConnection time out, retrying")
+                    continue
+                else:
+                    print("\nMaximum connection trails reached, skipping request\n")
+                    return False
+            pkt = Packet(0, 0, 0, 0, 0, ack)
+            pkt.decode_seq()
+            # Second wave
+            if pkt.msg.split(delimiter)[0] == "FIN ACK" and int(pkt.msg.split(delimiter)[1]) == 1 \
+                    and pkt.msg.split(delimiter)[2] == "ack number" and int(pkt.msg.split(delimiter)[3]) == self.seq:
+                break
+            else:
+                continue
+        # Receive final result from server
+        result, address = self.sock.recvfrom(size)
+        pkt = Packet(0, 0, 0, 0, 0, result)
+        pkt.decode_seq()
+        result = pkt.msg
+        print("Final result %s" % result)
+
+        fin, address = self.sock.recvfrom(size)
+        pkt = Packet(0, 0, 0, 0, 0, fin)
+        pkt.decode_seq()
+        # Third wave
+        if pkt.msg.split(delimiter)[0] == "FIN" and int(pkt.msg.split(delimiter)[1]) == 1 \
+                and pkt.msg.split(delimiter)[2] == "ACK" and int(pkt.msg.split(delimiter)[3]) == 1 \
+                and pkt.msg.split(delimiter)[4] == "ack number" and int(pkt.msg.split(delimiter)[5]) == self.seq:
+            msg = "FIN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(pkt.seq + 1)
+            # Fourth wave
+            self.send_packet(msg, address)
+            self.sock.settimeout(0.002)
+            self.sock.close()
+            print("close socket")
 
     def receive_ack(self):
         # Receive ack from proxy
@@ -268,7 +303,7 @@ class Client2:
                     # print("rto: %s \n srtt : %s" % (self.rto, self.srtt))
         # Finish sending data
         else:
-            self.state = WAIT
+            self.state = FIN
 
     def run(self):
         # Connection initiation
@@ -293,29 +328,11 @@ class Client2:
             elif self.state == CONNECTED:
                 self.send_data()
                 self.receive_ack()
-            elif self.state == WAIT:
-                result, address = self.sock.recvfrom(size)
-                pkt = Packet(0, 0, 0, 0, 0, result)
-                pkt.decode_seq()
-                result = pkt.msg
-                print(result)
-
-
-
-                # send_msg = threading.Thread(target=self.send_msg)
-                # recv_msg = threading.Thread(target=self.recv_ack)
-                # send_msg.start()
-                # recv_msg.start()
-
-                # self.send_data(userInput.split(",")[0])
-            # self.result_from_server()
+            elif self.state == FIN:
+                self.disconnect()
+                break
 
 
 if __name__ == '__main__':
     client = Client2()
     client.run()
-
-    # finally:
-    #     print("Closing socket")
-    #     sock.close()
-    #     break
