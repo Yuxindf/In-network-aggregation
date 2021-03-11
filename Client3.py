@@ -39,9 +39,9 @@ logging.basicConfig(format='[%(asctime)s.%(msecs)03d] CLIENT - %(levelname)s: %(
 # 要答辩
 # Packet class definition
 
-class Client1:
+class Client3:
     def __init__(self):
-        self.client_id = 1
+        self.client_id = 3
         # Client Initial State
         self.job_id = 0
         self.seq = random.randrange(1024)  # The current sequence number
@@ -128,7 +128,7 @@ class Client1:
     def store_basic_info(self):
         return 0
 
-    # Send basic information to server and Receive ACK from proxy
+    # Send basic information to server and Receive ACK from server
     def send_basic_info(self):
         connection_trails_count = 0
         while True:
@@ -137,9 +137,9 @@ class Client1:
             # Send basic information to server
             # msg will include operation type, data size...
             if self.weight == -1:
-                msg = "client info" + delimiter + self.cal_type + delimiter + str(self.packet_number)  ### 类型编码成整数，占用32位或8位。header可以固定。变长也可。
+                msg = "Connect directly: info" + delimiter + self.cal_type + delimiter + str(self.packet_number)  ### 类型编码成整数，占用32位或8位。header可以固定。变长也可。
             else:
-                msg = "client info" + delimiter + self.cal_type + delimiter + str(self.packet_number) + delimiter + str(self.weight)
+                msg = "Connect directly: info" + delimiter + self.cal_type + delimiter + str(self.packet_number) + delimiter + str(self.weight)
             pkt = self.send_packet(msg, self.server_address)
             try:
                 # self.sock.settimeout(5)
@@ -171,8 +171,8 @@ class Client1:
         # Send message
         if self.packet_index >= len(self.data_list) and (self.packets_in_flight == {} or self.packets_retransmit != {}):
             self.packets_in_flight[self.packet_index] = {"seq": self.seq, "time": t.time()}
-            print("\nSend finish to proxy")
-            self.send_packet("data: finish", self.proxy_address)
+            print("\nSend finish to server")
+            self.send_packet("data: finish", self.server_address)
 
         # Send packets
         if min(self.cwnd, self.rwnd) > len(self.packets_in_flight) \
@@ -183,7 +183,7 @@ class Client1:
                 if self.packets_retransmit != {}:
                     for key in list(self.packets_retransmit.keys()):
                         msg = "data" + delimiter + str(self.data_list[key]) + delimiter + str(key)
-                        self.send_packet(msg, self.proxy_address)
+                        self.send_packet(msg, self.server_address)
                         self.packets_in_flight[key] = {"seq": self.seq, "time": t.time()}
                         self.packets_retransmit.pop(key)
                         print("retransmit %s" % key)
@@ -191,21 +191,21 @@ class Client1:
                 # Send packet
                 if self.packet_index < len(self.data_list):
                     self.packets_in_flight[self.packet_index] = {"seq": self.seq, "time": t.time()}  # 做成字典，效率高。
-                    # print("Send to proxy: Packet index %s Seq %s" % (self.packet_index, str(int(self.seq))))
+                    # print("Send to server: Packet index %s Seq %s" % (self.packet_index, str(int(self.seq))))
                     # print(self.packets_in_flight.keys())
                     msg = "data" + delimiter + str(self.data_list[self.packet_index]) + delimiter + str(self.packet_index)
-                    self.send_packet(msg, self.proxy_address)
+                    self.send_packet(msg, self.server_address)
                     self.packet_index += 1
 
         # print("\nCurrent cwnd %s Packets in flight %s" % (self.cwnd, len(self.packets_in_flight)))
 
     def receive_ack(self):
-        # Receive ack from proxy
+        # Receive ack from server
         try:
             ack, address = self.sock.recvfrom(size)
         except socket.timeout:
             self.state = CLOSED
-            logging.error("The client does not receive ack from proxy")
+            logging.error("The client does not receive ack from server")
             return
         pkt = Packet(0, 0, 0, 0, 0, ack)
         pkt.decode_seq()
@@ -344,5 +344,5 @@ class Client1:
 
 
 if __name__ == '__main__':
-    client = Client1()
+    client = Client3()
     client.run()

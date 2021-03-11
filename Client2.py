@@ -321,8 +321,8 @@ class Client2:
             if self.state == CLOSED:
                 logging.info("Handshaking...")
                 self.handshake()
-                # userInput = "1 minimum test1.txt"
-                userInput = "1 average test2.txt 0.1"
+                userInput = "1 minimum test1.txt"
+                # userInput = "1 average test2.txt 0.1"
                 # userInput = input("\nInput file and Calculation type: ")
                 self.job_id = int(userInput.split(" ")[0])
                 self.cal_type = userInput.split(" ")[1]
