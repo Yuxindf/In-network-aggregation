@@ -48,6 +48,7 @@ class Client1:
         self.index = 1
         self.offset = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.state_history = CLOSED
         self.state = CLOSED
 
         self.file = 0
@@ -66,7 +67,6 @@ class Client1:
         self.packet_index = 0
         self.packets_in_flight = collections.OrderedDict()
         self.packets_retransmit = collections.OrderedDict()
-        self.packets_recv_ack = collections.OrderedDict()
 
         self.srtt = -1
         self.devrtt = 0  # calculate the devision of srtt and real rtt
@@ -85,19 +85,20 @@ class Client1:
             syn = 1
             # try:
             msg = "SYN" + delimiter + str(syn)
-            pkt = self.send_packet(msg, self.server_address)
-            # except:
-            #     logging.error("Cannot send message")
+            try:
+                pkt = self.send_packet(msg, self.server_address)
+            except:
+                logging.error("Cannot send message")
             try:
                 ack, address = self.sock.recvfrom(size)
-            except:
+            except socket.timeout:
                 connection_trails_count += 1
-                if connection_trails_count < 5:
+                if connection_trails_count < 10:
                     print("\nConnection time out, retrying")
                     continue
                 else:
                     print("\nMaximum connection trails reached, skipping request\n")
-                    return False
+                    return
             from_server = Packet(0, 0, 0, 0, 0, ack)
             from_server.decode_seq()
             # Third handshake
@@ -107,7 +108,10 @@ class Client1:
                     and from_server.msg.split(delimiter)[4] == "ACK" and int(from_server.msg.split(delimiter)[5]) == 1:
                 msg = "SYN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(from_server.seq + 1)
                 self.send_packet(msg, address)
-                self.state = CONNECTED
+                if self.state_history == CLOSED:
+                    self.state_history = CONNECTED
+                self.state = self.state_history
+                print("Successfully connected")
                 break
 
     def open_file(self):
@@ -126,7 +130,8 @@ class Client1:
 
     # Send basic information to server and Receive ACK from proxy
     def send_basic_info(self):
-        while 1:
+        connection_trails_count = 0
+        while True:
             self.open_file()
             self.packet_number = len(self.data_list)
             # Send basic information to server
@@ -136,13 +141,14 @@ class Client1:
             else:
                 msg = "client info" + delimiter + self.cal_type + delimiter + str(self.packet_number) + delimiter + str(self.weight)
             pkt = self.send_packet(msg, self.server_address)
-
             try:
+                # self.sock.settimeout(5)
                 # Receive ACK from server
                 buf, address = self.sock.recvfrom(size)
-            except:
-                print("Time out reached, resending...")
-                continue
+            except socket.timeout:
+                print("The connection is closed. Start connecting again...\n")
+                self.state = CLOSED
+                break
             ack = Packet(0, 0, 0, 0, 0, buf)
             ack.decode_seq()
             if int(ack.msg) == pkt.seq + 1:
@@ -197,8 +203,10 @@ class Client1:
         # Receive ack from proxy
         try:
             ack, address = self.sock.recvfrom(size)
-        except:
+        except socket.timeout:
+            self.state = CLOSED
             logging.error("The client does not receive ack from proxy")
+            return
         pkt = Packet(0, 0, 0, 0, 0, ack)
         pkt.decode_seq()
         if "finish" not in pkt.msg:
@@ -255,6 +263,7 @@ class Client1:
                     # print("rto: %s \n srtt : %s" % (self.rto, self.srtt))
         # Finish sending data
         else:
+            self.state_history = FIN
             self.state = FIN
 
     # Receive result from server and four waves
@@ -266,14 +275,8 @@ class Client1:
             self.send_packet(msg, self.server_address)
             try:
                 ack, address = self.sock.recvfrom(size)
-            except:
-                connection_trails_count += 1
-                if connection_trails_count < 5:
-                    print("\nConnection time out, retrying")
-                    continue
-                else:
-                    print("\nMaximum connection trails reached, skipping request\n")
-                    return False
+            except socket.timeout:
+                self.state = CLOSED
             pkt = Packet(0, 0, 0, 0, 0, ack)
             pkt.decode_seq()
             # Second wave
@@ -283,13 +286,21 @@ class Client1:
             else:
                 continue
         # Receive final result from server
-        result, address = self.sock.recvfrom(size)
+        # self.sock.settimeout(60)
+        try:
+            result, address = self.sock.recvfrom(size)
+        except socket.timeout:
+            self.state = CLOSED
+            print("Do not receive final result. Reconnecting...")
         pkt = Packet(0, 0, 0, 0, 0, result)
         pkt.decode_seq()
         result = pkt.msg
         print("Final result %s" % result)
 
-        fin, address = self.sock.recvfrom(size)
+        try:
+            fin, address = self.sock.recvfrom(size)
+        except socket.timeout:
+            print("The connection is closed.")
         pkt = Packet(0, 0, 0, 0, 0, fin)
         pkt.decode_seq()
         # Third wave
@@ -310,8 +321,8 @@ class Client1:
             if self.state == CLOSED:
                 logging.info("Handshaking...")
                 self.handshake()
-                userInput = "1 minimum test1.txt"
-                # userInput = "1 average test2.txt 0.1"
+                # userInput = "1 minimum test1.txt"
+                userInput = "1 average test2.txt 0.1"
                 # userInput = input("\nInput file and Calculation type: ")
                 self.job_id = int(userInput.split(" ")[0])
                 self.cal_type = userInput.split(" ")[1]
