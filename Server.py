@@ -98,6 +98,9 @@ class Server:
               delimiter + str(info.client_id) + delimiter + cal_type + delimiter + packet_number
         self.clients[str(info.client_id)]["server seq"] = self.seq
         self.clients[str(info.client_id)]["client seq"] = info.seq
+        self.clients[str(info.client_id)]["next seq"] = client_seq + 1
+        self.clients[str(info.client_id)]["relocate seq"] = False
+        self.clients[str(info.client_id)]["correct seq"] = False
         # Store clients' information in a file
         self.backup(self.clients_file, self.clients)
         return msg
@@ -109,11 +112,11 @@ class Server:
         data = float(pkt.msg.split(delimiter)[2])
         job_id = self.clients[str(client_id)]["job id"]
         cal_type = self.clients[str(client_id)]["cal type"]
-        client_address = self.clients[str(client_id)]["address"]
+        client_address = self.clients[str(client_id)]["client address"]
         if str(job_id) not in self.result_from_proxy.keys():
             # Initialize the dictionary
             self.result_from_proxy[str(job_id)] = {"cal type": cal_type, "client id": [client_id],
-                                              "client address": [client_address], "data": [], "time": t.time()}
+                                                   "client address": [client_address], "data": [], "time": t.time()}
         else:
             # Add new client
             self.result_from_proxy[str(job_id)]["client id"].append(client_id)
@@ -132,13 +135,13 @@ class Server:
     def do_calculation(self, key):
         cal_type = self.result_from_proxy[key]["cal type"]
         if cal_type == "average":
-            sum = 0
+            total = 0
             number = len(self.result_from_proxy[key]["data"])
             for i in self.result_from_proxy[key]["data"]:
                 data = i[0]
                 weight = i[1]
-                sum += data * weight
-            ans = sum / number
+                total += data * weight
+            ans = total / number
         else:
             data = []
             for i in self.result_from_proxy[key]["data"]:
@@ -153,15 +156,15 @@ class Server:
         self.backup(self.result_from_proxy_file, self.result_from_proxy)
 
         for id in self.clients_wait_fin.keys():
-            self.send_packet(ans, self.clients[id]["address"])
-            print("Sending result to client (%s, %s)" % self.clients[id]["address"])
+            self.send_packet(ans, self.clients[id]["client address"])
+            print("Sending result to client (%s, %s)" % self.clients[id]["client address"])
             fin_ack_number = self.clients_wait_fin[id]["fin ack number"]
             msg = "FIN" + delimiter + str(1) + delimiter + "ACK" + delimiter + str(1) \
                   + delimiter + "ack number" + delimiter + str(fin_ack_number)
             self.clients_wait_fin[id]["server seq"] = self.seq
             # Update clients that wait in fin in the file
             self.backup(self.clients_wait_fin_file, self.clients_wait_fin)
-            self.send_packet(msg, self.clients[id]["address"])
+            self.send_packet(msg, self.clients[id]["client address"])
 
     # Send final result to client
     def send_final_result(self):
@@ -180,46 +183,68 @@ class Server:
     # Clients connect with server directly
     # Receive data from client and send ACK back
     def recv_data(self, pkt, address):
+        client_id = str(pkt.client_id)
         # Send Ack to Client
         if "finish" not in pkt.msg:
             # Initialize
-            if str(pkt.client_id) not in self.data.keys():
-                self.data[str(pkt.client_id)] = {"data": []}
+            if client_id not in self.data.keys():
+                self.data[client_id] = {"data": [], "seq": []}
                 # Backup data from clients in a file
                 self.backup(self.data_file, self.data)
-            packet_index = int(pkt.msg.split(delimiter)[2])
             data = pkt.msg.split(delimiter)[1]
-            # Weighted average
-            if self.clients[str(pkt.client_id)]["cal type"] == "average":
-                number = float(data[1:-1].split(",")[0])
-                weight = float(data[1:-1].split(",")[1])
-                data = (number, weight)
-                self.data[str(pkt.client_id)]["data"].append(data)
-            # Maximum or Minimum
+            if pkt.seq not in self.data[client_id]["seq"]:
+                # Weighted average
+                if self.clients[client_id]["cal type"] == "average":
+                    number = float(data[1:-1].split(",")[0])
+                    weight = float(data[1:-1].split(",")[1])
+                    data = (number, weight)
+                # Maximum or Minimum
+                else:
+                    data = float(data)
+                self.data[client_id]["data"].append(data)
+                self.data[client_id]["seq"].append(pkt.seq)
+                # Update data from clients in the file
+                self.backup(self.data_file, self.data)
+
+            # Normal situation
+            if pkt.seq == self.clients[client_id]["next seq"]:
+                self.clients[client_id]["next seq"] += 1
+                msg = str(self.clients[client_id]["next seq"]) + delimiter + str(self.rwnd)
+                self.clients[client_id]["correct seq"] = True
+            # Duplicate ack
             else:
-                data = float(data)
-                self.data[str(pkt.client_id)]["data"].append(data)
-            # Update data from clients in the file
-            self.backup(self.data_file, self.data)
-            msg = str(pkt.seq + 1) + delimiter + str(self.rwnd) + delimiter + str(packet_index)
+                self.clients[client_id]["correct seq"] = False
+                msg = str(self.clients[client_id]["next seq"]) + delimiter + str(self.rwnd) + delimiter + str(pkt.seq)
+                self.clients[client_id]["relocate seq"] = True
+            self.backup(self.clients_file, self.clients)
+            if self.clients[client_id]["correct seq"] and self.clients[client_id]["relocate seq"]:
+                self.clients[client_id]["relocate seq"] = False
+                for i in range(self.clients[client_id]["next seq"],
+                               self.clients[client_id]["next seq"] + self.clients[client_id]["packet number"]):
+                    if i not in self.data[client_id]["seq"]:
+                        self.clients[client_id]["next seq"] = i
+                        print("now %s" %i)
+                        break
+                msg = str(self.clients[client_id]["next seq"]) + delimiter + str(self.rwnd)
             self.send_packet(msg, address)
-            # print("Receive packet %s from Client %s, sending ack..." % (packet_index, address))
+            self.backup(self.clients_file, self.clients)
+            print(msg)
+            print("Receive packet %s from Client %s, sending ack..." % (pkt.seq, address))
 
         else:
-            msg = str(pkt.seq + 1) + "finish"
+            msg = str(self.clients[client_id]["next seq"]) + delimiter + "finish"
             print("Receive all packets from client (%s, %s)" % address)
             self.send_packet(msg, address)
-            # Update data from clients in the file
-            self.backup(self.data_file, self.data)
-            self.calculate[str(pkt.client_id)] = {}
+            self.calculate[client_id] = {}
             # Backup data that wait to be calculated in a file
             self.backup(self.calculate_file, self.calculate)
-            print(self.data)
+            # print(self.data)
 
     # do some calculations for data that are sent by client
     def aggregate(self):
         if self.calculate != {}:
             for key in self.calculate.keys():
+                ans = 0
                 # Weighted average
                 if self.clients[key]["cal type"] == "average":
                     total = 0
@@ -235,7 +260,7 @@ class Server:
                         ans = data.max()
                     elif self.clients[key]["cal type"] == "minimum":
                         ans = data.min()
-                print(ans)
+                print("The result of client %s is %s" % (self.clients[key]["client address"], ans))
                 # Do "aggregation" like proxy
                 msg = "aggregation result" + delimiter + str(key) + delimiter + str(ans)
                 tmp_pkt = Packet(0, 0, 0, 0, msg, 0)
@@ -257,9 +282,9 @@ class Server:
         self.clients = self.load_file(self.clients_file)
         self.result_from_proxy = self.load_file(self.result_from_proxy_file)
         self.clients_wait_fin = self.load_file(self.clients_wait_fin_file)
-        self.clients = collections.OrderedDict(self.clients)
-        self.result_from_proxy = collections.OrderedDict(self.result_from_proxy)
-        self.clients_wait_fin = collections.OrderedDict(self.clients_wait_fin)
+        self.clients = collections.OrderedDict()#self.clients)
+        self.result_from_proxy = collections.OrderedDict()#self.result_from_proxy)
+        self.clients_wait_fin = collections.OrderedDict()#self.clients_wait_fin)
         print("\nWaiting to receive message")
         timer = RepeatingTimer(10.0, self.monitor_job)  # For test, will change
         timer.start()
@@ -274,7 +299,7 @@ class Server:
                 msg = "ack number" + delimiter + str(decoded_pkt.seq + 1) + delimiter + "SYN" + delimiter + str(1) + \
                       delimiter + "ACK" + delimiter + str(1)
                 self.send_packet(msg, address)
-                self.clients[str(decoded_pkt.client_id)] = {"address": address, "server seq": self.seq - 1}
+                self.clients[str(decoded_pkt.client_id)] = {"client address": address, "server seq": self.seq - 1}
 
             # Third handshake
             elif decoded_pkt.msg.split(delimiter)[0] == "SYN ACK" and int(decoded_pkt.msg.split(delimiter)[1]) ==1:
@@ -288,11 +313,12 @@ class Server:
                 msg = self.receive_client_info(decoded_pkt, address)
                 self.send_packet(msg, proxy_address)
 
+            # Receive proxy ack
             elif "proxy ack" in decoded_pkt.msg:
                 client_id = int(decoded_pkt.msg.split(delimiter)[1])
                 if int(decoded_pkt.msg.split(delimiter)[2]) == self.clients[str(client_id)]["server seq"] + 1:
                     # Send Ack to client
-                    self.send_packet(self.clients[str(client_id)]["client seq"] + 1, self.clients[str(client_id)]["address"])
+                    self.send_packet(self.clients[str(client_id)]["client seq"] + 1, self.clients[str(client_id)]["client address"])
 
             elif decoded_pkt.msg.split(delimiter)[0] == "FIN" and int(decoded_pkt.msg.split(delimiter)[1]) == 1:
                 msg = "FIN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(decoded_pkt.seq + 1)
@@ -305,12 +331,13 @@ class Server:
             elif "aggregation result" in decoded_pkt.msg:
                 print("Receive one aggregation result of job %s from proxy" % decoded_pkt.msg.split(delimiter)[1])
                 self.obtain_aggregation_result(decoded_pkt)
+                msg = "server ack" + delimiter + str(decoded_pkt.seq + 1) + delimiter + str(decoded_pkt.msg.split(delimiter)[1])
+                self.send_packet(msg, address)
                 self.send_final_result()
 
             elif decoded_pkt.msg.split(delimiter)[0] == "FIN ACK" and int(decoded_pkt.msg.split(delimiter)[1]) == 1:
                 for key in self.clients_wait_fin.keys():
-                    if self.clients[str(key)]["address"] == address:
-                        print(address)
+                    if self.clients[str(key)]["client address"] == address:
                         if self.clients_wait_fin[key]["server seq"] + 1 == int(decoded_pkt.msg.split(delimiter)[3]):
                             self.clients.pop(key)
                             # Update connected clients in the file
