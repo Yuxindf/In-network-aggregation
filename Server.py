@@ -235,9 +235,10 @@ class Server:
             msg = str(self.clients[client_id]["next seq"]) + delimiter + "finish"
             print("Receive all packets from client (%s, %s)" % address)
             self.send_packet(msg, address)
-            self.calculate[client_id] = {}
-            # Backup data that wait to be calculated in a file
-            self.backup(self.calculate_file, self.calculate)
+            if client_id in self.data.keys():
+                self.calculate[client_id] = {}
+                # Backup data that wait to be calculated in a file
+                self.backup(self.calculate_file, self.calculate)
             # print(self.data)
 
     # do some calculations for data that are sent by client
@@ -251,7 +252,7 @@ class Server:
                     for i in self.data[key]["data"]:
                         total += i[0] * i[1]
                     ans = total / len(self.data[key]["data"])
-                # Weighted average
+                # Minimum or Maximum
                 else:
                     data = []
                     for i in self.data[key]["data"]:
@@ -309,7 +310,7 @@ class Server:
                     print("Connected with client (%s, %s)" % address)
 
             # Receive client basic information
-            elif "client info" in decoded_pkt.msg:
+            elif decoded_pkt.msg.split(delimiter)[0] == "client info":
                 msg = self.receive_client_info(decoded_pkt, address)
                 self.send_packet(msg, proxy_address)
 
@@ -319,6 +320,10 @@ class Server:
                 if int(decoded_pkt.msg.split(delimiter)[2]) == self.clients[str(client_id)]["server seq"] + 1:
                     # Send Ack to client
                     self.send_packet(self.clients[str(client_id)]["client seq"] + 1, self.clients[str(client_id)]["client address"])
+
+            elif "client info directly" in decoded_pkt.msg:
+                self.receive_client_info(decoded_pkt, address)
+                self.send_packet(decoded_pkt.seq + 1, address)
 
             elif decoded_pkt.msg.split(delimiter)[0] == "FIN" and int(decoded_pkt.msg.split(delimiter)[1]) == 1:
                 msg = "FIN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(decoded_pkt.seq + 1)

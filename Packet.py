@@ -28,4 +28,3 @@ class Packet:
         self.job_id, self.index, self.seq, self.offset, self.msg = struct.unpack("!IIII100s", self.buf)
 
 
-tmp_pkt = Packet(0, 0, 0, 0, 0, 0)

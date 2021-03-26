@@ -151,9 +151,10 @@ class Proxy:
             msg = str(self.clients[client_id]["next seq"]) + delimiter + "finish"
             print("Receive all packets from client (%s, %s)" % address)
             self.send_packet(msg, address)
-            self.calculate[client_id] = {}
-            # Backup data that wait to be calculated in a file
-            self.backup(self.calculate_file, self.calculate)
+            if client_id in self.data.keys():
+                self.calculate[client_id] = {}
+                # Backup data that wait to be calculated in a file
+                self.backup(self.calculate_file, self.calculate)
             # print(self.data)
 
     # 带权平均，packet header可以带一个权重，默认为1。server那里可知，做到全局平均。
@@ -177,6 +178,7 @@ class Proxy:
                     elif self.clients[key]["cal type"] == "minimum":
                         ans = data.min()
                 print("The result of client %s is %s. Send to server..." %(self.clients[key]["client address"], ans))
+                # Send client id and answer to server
                 msg = "aggregation result" + delimiter + str(key) + delimiter + str(ans)
                 self.send_packet(msg, server_address)
                 self.data.pop(key)
