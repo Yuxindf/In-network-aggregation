@@ -125,6 +125,7 @@ class Client2:
                 self.data_list[index] = {"data": i, "duplicate acks": 0, "seq": -1}
                 index += 1
             file_read.close()
+            self.data_list["finish"] = {"data": "finish", "duplicate acks": 0, "seq": -1}
         except FileNotFoundError:
             print("Requested file could not be found")
 
@@ -137,7 +138,7 @@ class Client2:
         connection_trails_count = 0
         while True:
             self.open_file()
-            self.packet_number = len(self.data_list)
+            self.packet_number = len(self.data_list) - 1
             # Send basic information to server
             # msg will include operation type, data size...
             if self.weight == -1:
@@ -178,15 +179,8 @@ class Client2:
         # Number of packets in flight
         self.number_in_flight = min(max(0, self.number_in_flight), len(self.packets_in_flight))
 
-        # Send finish to proxy
-        if self.data_list == {} and self.packets_in_flight == {}:
-            self.packets_in_flight[self.packet_index] = {"seq": self.seq, "time": t.time()}
-            self.number_in_flight += 1
-            print("\nSend finish to proxy")
-            self.send_packet("data: finish", self.proxy_address, -1)
-
         # Send packets
-        print("cwnd %s in flight %s remaining %s" % (self.cwnd, len(self.packets_in_flight), len(self.data_list)))
+        print("rwnd %s cwnd %s in flight %s remaining %s" % (self.rwnd, self.cwnd, len(self.packets_in_flight), len(self.data_list)))
         if min(self.cwnd, self.rwnd) > self.number_in_flight and self.data_list != {}:
             while min(self.cwnd, self.rwnd) > self.number_in_flight:
                 # Retransmit: Three duplicate acks.
@@ -214,7 +208,7 @@ class Client2:
                         self.packets_retransmit.pop(key)
                         print("Retransmit: packet index %s" % key)
 
-                # Send packet
+                # Send data
                 if self.packet_index < self.packet_number:
                     if self.data_list[self.packet_index]["seq"] == -1:
                         self.data_list[self.packet_index]["seq"] = self.seq
@@ -226,9 +220,26 @@ class Client2:
                     self.send_packet(msg, self.proxy_address, -1)
                     self.packet_index += 1
                     # print(self.packets_in_flight)
+                # Send finish
+                elif len(self.data_list) == 1 and self.packets_in_flight == {} and self.data_list["finish"]["seq"] == -1:
+                    self.data_list["finish"]["seq"] = self.seq
+                    self.packets_in_flight["finish"] = {"seq": self.data_list["finish"]["seq"], "time": t.time()}
+                    msg = "data" + delimiter + "finish"
+                    self.send_packet(msg, self.proxy_address, -1)
+                    self.packet_index += 1
+                    print("Send finish to proxy")
                 else:
                     break
 
+                if len(self.data_list) == 1:
+                    print("123456")
+                    break
+
+        elif self.rwnd == 0:
+            t.sleep(1)
+            self.send_packet("data", self.proxy_address, self.seq)
+
+        # print("\nCurrent cwnd %s Packets in flight %s" % (self.cwnd, len(self.packets_in_flight)))
         # print("\nCurrent cwnd %s Packets in flight %s" % (self.cwnd, len(self.packets_in_flight)))
 
     def receive_ack(self):
@@ -251,16 +262,16 @@ class Client2:
             else:
                 self.cwnd += 1.0 / self.cwnd
             # print(pkt.msg.split(delimiter)[2])
-            if "finish" not in pkt.msg:
+            # Receive ack of data
+            if len(self.data_list) > 1:
                 next_seq = int(pkt.msg.split(delimiter)[0])
                 self.rwnd = int(pkt.msg.split(delimiter)[1])
-                send_time = 0
                 if self.number_in_flight != 0:
                     # print(len(self.packets_in_flight))
                     # Remove data that are ensured to be received
                     tmp_index = -1
 
-                    for i in list(self.data_list.keys()):
+                    for i in list(self.data_list.keys())[:-1]:
                         if self.data_list[i]["seq"] != -1 and self.data_list[i]["seq"] <= next_seq - 1:
                             self.data_list.pop(i)
                             send_time = self.packets_in_flight[i]["time"]
@@ -298,8 +309,8 @@ class Client2:
                         self.data_list[tmp_index]["duplicate acks"] += 1
 
                         # print("rto: %s \n srtt : %s" % (self.rto, self.srtt))
-            # Finish sending data
-            else:
+            # Receive ack of finish
+            elif int(pkt.msg.split(delimiter)[0]) == self.packets_in_flight["finish"]["seq"] + 1:
                 self.state_history = FIN
                 self.state = FIN
 
@@ -377,7 +388,6 @@ class Client2:
             else:
                 continue
 
-
     def run(self):
         # Connection initiation
         count = 0
@@ -385,7 +395,7 @@ class Client2:
             if self.state == CLOSED:
                 logging.info("Handshaking...")
                 self.handshake()
-                userInput = "1 minimum test1.txt"
+                userInput = "2 minimum test1.txt"
                 # userInput = "1 average test2.txt 0.1"
                 # userInput = input("\nInput file and Calculation type: ")
                 self.job_id = int(userInput.split(" ")[0])
