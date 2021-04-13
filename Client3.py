@@ -42,7 +42,7 @@ class Client3:
         self.client_id = 3
         # Client Initial State
         self.job_id = 0
-        self.seq = random.randrange(1024)  # The current sequence number
+        self.seq = random.randrange(1024)  # Initial sequence number(ISN) should be random
         self.index = 1
         self.offset = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -54,7 +54,7 @@ class Client3:
         self.weight = -1  # Used for weighted average
         self.packet_number = 0  # The number of data that is used to calculate
 
-        # Server and address
+        # Server address
         self.server_address = (serverAddress, serverPort)
 
         # Congestion control
@@ -119,10 +119,10 @@ class Client3:
             data = file_read.read()
             index = 0
             for i in data.split(" "):
-                self.data_list[index] = {"data": i, "duplicate acks": 0, "seq": -1}
+                self.data_list[index] = {"data": i, "duplicate acks": 0}
                 index += 1
             file_read.close()
-            self.data_list["finish"] = {"data": "finish", "duplicate acks": 0, "seq": -1}
+            self.data_list["finish"] = {"data": "finish", "duplicate acks": 0}
         except FileNotFoundError:
             print("Requested file could not be found")
 
@@ -139,9 +139,9 @@ class Client3:
             # Send basic information to server
             # msg will include operation type, data size...
             if self.weight == -1:
-                msg = "client info" + delimiter + self.cal_type + delimiter + str(self.packet_number)  ### 类型编码成整数，占用32位或8位。header可以固定。变长也可。
+                msg = "Connect directly: info" + delimiter + self.cal_type + delimiter + str(self.packet_number)  ### 类型编码成整数，占用32位或8位。header可以固定。变长也可。
             else:
-                msg = "client info" + delimiter + self.cal_type + delimiter + str(self.packet_number) + delimiter + str(self.weight)
+                msg = "Connect directly: info" + delimiter + self.cal_type + delimiter + str(self.packet_number) + delimiter + str(self.weight)
             pkt = self.send_packet(msg, self.server_address, -1)
             try:
                 # self.sock.settimeout(5)
@@ -207,22 +207,19 @@ class Client3:
 
                 # Send data
                 if self.packet_index < self.packet_number:
-                    if self.data_list[self.packet_index]["seq"] == -1:
-                        self.data_list[self.packet_index]["seq"] = self.seq
                     self.packets_in_flight[self.packet_index] = {"seq": self.data_list[self.packet_index]["seq"], "time": t.time()}  # 做成字典，效率高。
                     self.number_in_flight += 1
                     # print("Send to server: Packet index %s Seq %s" % (self.packet_index, str(int(self.seq))))
                     # print(self.packets_in_flight.keys())
                     msg = "data" + delimiter + str(self.data_list[self.packet_index]["data"])
-                    self.send_packet(msg, self.server_address, -1)
+                    self.send_packet(msg, self.server_address, self.data_list[self.packet_index]["seq"])
                     self.packet_index += 1
                     # print(self.packets_in_flight)
                 # Send finish
-                elif len(self.data_list) == 1 and self.packets_in_flight == {} and self.data_list["finish"]["seq"] == -1:
-                    self.data_list["finish"]["seq"] = self.seq
+                elif len(self.data_list) == 1 and self.packets_in_flight == {}:
                     self.packets_in_flight["finish"] = {"seq": self.data_list["finish"]["seq"], "time": t.time()}
                     msg = "data" + delimiter + "finish"
-                    self.send_packet(msg, self.server_address, -1)
+                    self.send_packet(msg, self.server_address, self.data_list["finish"]["seq"])
                     self.packet_index += 1
                     print("Send finish to server")
                 else:
@@ -265,10 +262,9 @@ class Client3:
                 if self.number_in_flight != 0:
                     # print(len(self.packets_in_flight))
                     # Remove data that are ensured to be received
-                    tmp_index = -1
 
                     for i in list(self.data_list.keys())[:-1]:
-                        if self.data_list[i]["seq"] != -1 and self.data_list[i]["seq"] <= next_seq - 1:
+                        if self.data_list[i]["seq"] <= next_seq - 1:
                             self.data_list.pop(i)
                             send_time = self.packets_in_flight[i]["time"]
                             self.packets_in_flight.pop(i)
@@ -291,18 +287,10 @@ class Client3:
                                 self.rto = max(self.rto, 1)  # Always round up RTO.
                                 self.rto = min(self.rto, 60)  # Maximum value 60 seconds.
 
-                            # print(self.data_list)
-                        elif self.data_list[i]["seq"] == next_seq:
-                            tmp_index = i
-                            break
-                        elif self.data_list[i]["seq"] == -1:
-                            self.data_list[i]["seq"] = next_seq
-                            tmp_index = i
-                            break
-
-                    if tmp_index != -1:
                         # Record duplicate ack
-                        self.data_list[tmp_index]["duplicate acks"] += 1
+                        elif self.data_list[i]["seq"] == next_seq:
+                            self.data_list[i]["duplicate acks"] += 1
+                            break
 
                         # print("rto: %s \n srtt : %s" % (self.rto, self.srtt))
             # Receive ack of finish
@@ -391,8 +379,8 @@ class Client3:
             if self.state == CLOSED:
                 logging.info("Handshaking...")
                 self.handshake()
-                userInput = "1 minimum test1.txt"
-                # userInput = "1 average test2.txt 0.1"
+                # userInput = "1 minimum test1.txt"
+                userInput = "1 average test2.txt 0.1"
                 # userInput = input("\nInput file and Calculation type: ")
                 self.job_id = int(userInput.split(" ")[0])
                 self.cal_type = userInput.split(" ")[1]
@@ -403,6 +391,9 @@ class Client3:
                 # print("Requesting the %s in file %s" % (userInput.split(" ")[1], userInput.split(" ")[2]))
                 print("Requesting the %s in file %s" % (self.cal_type, self.file))
                 self.send_basic_info()
+                for i in self.data_list:
+                    self.data_list[i]["seq"] = self.seq
+                    self.seq += 1
             elif self.state == LISTEN:
                 pass
             elif self.state == CONNECTED:

@@ -113,6 +113,7 @@ class Proxy:
             if pkt.seq not in self.data[client_id]["seq"]:
                 # Weighted average
                 if self.clients[client_id]["cal type"] == "average":
+                    data = data.split("  ")[0]
                     number = float(data[1:-1].split(",")[0])
                     weight = float(data[1:-1].split(",")[1])
                     data = (number, weight)
@@ -209,9 +210,6 @@ class Proxy:
                 self.rwnd += len(self.data[key]["data"])
                 self.data[key]["data"] = []
                 self.backup(self.data_file, self.data)
-                self.calculate.pop(key)
-                # Update data that wait to be calculated in the file
-                self.backup(self.calculate_file, self.calculate)
             # Check if the client has sent all the packets
             if self.clients[key]["packet number"] == self.data[key]["result"][1]:
                 print("Send client %s result %s to server..." %(self.clients[key]["client address"],
@@ -226,7 +224,9 @@ class Proxy:
                 self.data.pop(key)
                 self.backup(self.data_file, self.data)
 
-                return msg
+            self.calculate.pop(key)
+            # Update data that wait to be calculated in the file
+            self.backup(self.calculate_file, self.calculate)
 
     def run(self):
         print("Proxy start up on %s port %s\n" % (proxyAddress, proxy_port))
