@@ -1,3 +1,4 @@
+import json
 
 from Packet import Packet
 
@@ -16,7 +17,6 @@ receive_window_size = 24
 
 # Delimiter
 delimiter = "|*|*|"
-space = "|#|#|"
 
 size = 200
 
@@ -26,27 +26,24 @@ LISTEN = 2
 CONNECTED = 3
 FIN = 4
 
+# Data type flags
+IS_SYN = 1
+IS_INFO = 2
+IS_DATA = 3
+IS_ACK = 4
+IS_FIN = 5
+
 logging.basicConfig(format='[%(asctime)s.%(msecs)03d] CLIENT - %(levelname)s: %(message)s',
                     datefmt='%H:%M:%S', filename='network.log', level=logging.INFO)
 
 
-# numpy库 相当于C的数组，定义数组类型，int 8型等。。。
-# tobytes，数组的一个函数。得到一个序列
-# 要解序列化。 frombuffer, 转化回数组。
-# numpy有相应函数：max，ave等
-# 运算：加权平均；取最大；取最小。差不多了。
-# 公共结构、数可以放进一个class，方便改。
-# 要答辩
-# Packet class definition
-
 class Client1:
     def __init__(self):
+        self.last= 0
         self.client_id = 1
         # Client Initial State
         self.job_id = 0
         self.seq = random.randrange(1024)  # Initial sequence number(ISN) should be random
-        self.index = 1
-        self.offset = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.state_history = CLOSED
         self.state = CLOSED
@@ -62,11 +59,9 @@ class Client1:
 
         # Congestion control
         self.cwnd = 3  # initial congestion window size
-        self.rwnd = 1000
         self.ssthresh = 1000  #
         self.packet_index = 0
         self.number_in_flight = 0
-        self.last_retransmit = 0
         self.packets_in_flight = collections.OrderedDict()
         self.packets_retransmit = collections.OrderedDict()
 
@@ -74,8 +69,22 @@ class Client1:
         self.devrtt = 0  # calculate the devision of srtt and real rtt
         self.rto = 10  # Retransmission timeout
         self.time_last_lost = 0
+        self.last_retransmit = -1
+
+        # Flow control
+        self.rwnd = 1000
 
         self.data_list = collections.OrderedDict()
+        # To draw diagrams
+        self.info = collections.OrderedDict()
+        self.info_file = "./client/info.txt"
+
+    # Backup
+    def backup(self, file, data):
+        with open(file, "w") as f:
+            store = json.dumps(data)
+            f.write(store)
+        f.close()
 
     # Three-way handshakes
     def handshake(self):
@@ -87,7 +96,7 @@ class Client1:
             # try:
             msg = "SYN" + delimiter + str(syn)
             try:
-                pkt = self.send_packet(msg, self.server_address, -1)
+                pkt = self.send_packet(IS_SYN, msg, self.server_address, -1, -1)
             except:
                 logging.error("Cannot send message")
             try:
@@ -100,15 +109,15 @@ class Client1:
                 else:
                     print("\nMaximum connection trails reached, skipping request\n")
                     return
-            from_server = Packet(0, 0, 0, 0, 0, ack)
+            from_server = Packet(0, 0, 0, 0, 0, 0, ack)
             from_server.decode_seq()
             # Third handshake
-            if from_server.msg.split(delimiter)[0] == "ack number" \
+            if from_server.flag == IS_SYN and from_server.msg.split(delimiter)[0] == "ack number" \
                     and int(from_server.msg.split(delimiter)[1]) == pkt.seq + 1 \
                     and from_server.msg.split(delimiter)[2] == "SYN" and int(from_server.msg.split(delimiter)[3]) == 1\
                     and from_server.msg.split(delimiter)[4] == "ACK" and int(from_server.msg.split(delimiter)[5]) == 1:
                 msg = "SYN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(from_server.seq + 1)
-                self.send_packet(msg, address, -1)
+                self.send_packet(IS_SYN, msg, address, -1, -1)
                 if self.state_history == CLOSED:
                     self.state_history = CONNECTED
                 self.state = self.state_history
@@ -125,7 +134,6 @@ class Client1:
                 self.data_list[index] = {"data": i, "duplicate acks": 0}
                 index += 1
             file_read.close()
-            self.data_list["finish"] = {"data": "finish", "duplicate acks": 0}
         except FileNotFoundError:
             print("Requested file could not be found")
 
@@ -138,14 +146,14 @@ class Client1:
         connection_trails_count = 0
         while True:
             self.open_file()
-            self.packet_number = len(self.data_list) - 1
+            self.packet_number = len(self.data_list)
             # Send basic information to server
             # msg will include operation type, data size...
             if self.weight == -1:
                 msg = "client info" + delimiter + self.cal_type + delimiter + str(self.packet_number)  ### 类型编码成整数，占用32位或8位。header可以固定。变长也可。
             else:
                 msg = "client info" + delimiter + self.cal_type + delimiter + str(self.packet_number) + delimiter + str(self.weight)
-            pkt = self.send_packet(msg, self.server_address, -1)
+            pkt = self.send_packet(IS_INFO, msg, self.server_address, -1, -1)
             try:
                 # self.sock.settimeout(5)
                 # Receive ACK from server
@@ -154,20 +162,19 @@ class Client1:
                 print("The connection is closed. Start connecting again...\n")
                 self.state = CLOSED
                 break
-            ack = Packet(0, 0, 0, 0, 0, buf)
+            ack = Packet(0, 0, 0, 0, 0, 0, buf)
             ack.decode_seq()
             if int(ack.msg) == pkt.seq + 1:
                 break
             else:
                 continue
 
-    def send_packet(self, msg, address, seq):
-        self.offset += 1
+    def send_packet(self, flag, msg, address, seq, index):
         if seq == -1:
-            pkt = Packet(self.job_id, self.client_id, self.seq, self.offset, msg, 0)
+            pkt = Packet(flag, self.job_id, self.client_id, self.seq, index, msg, 0)
             self.seq += 1
         else:
-            pkt = Packet(self.job_id, self.client_id, seq, self.offset, msg, 0)
+            pkt = Packet(flag, self.job_id, self.client_id, seq, index, msg, 0)
         pkt.encode_seq()
         try:
             self.sock.sendto(pkt.buf, address)
@@ -180,7 +187,7 @@ class Client1:
         self.number_in_flight = min(max(0, self.number_in_flight), len(self.packets_in_flight))
 
         # Send packets
-        print("rwnd %s cwnd %s in flight %s remaining %s" % (self.rwnd, self.cwnd, len(self.packets_in_flight), len(self.data_list)))
+        # print("rwnd %s cwnd %s in flight %s remaining %s" % (self.rwnd, self.cwnd, len(self.packets_in_flight), len(self.data_list)))
         if min(self.cwnd, self.rwnd) > self.number_in_flight and self.data_list != {}:
             while min(self.cwnd, self.rwnd) > self.number_in_flight:
                 # Retransmit: Three duplicate acks.
@@ -189,7 +196,7 @@ class Client1:
                         msg = "data" + delimiter + str(self.data_list[key]["data"])
                         self.packets_in_flight[key] = {"seq": self.data_list[key]["seq"], "time": t.time()}
                         self.number_in_flight += 1
-                        self.send_packet(msg, self.proxy_address, self.data_list[key]["seq"])
+                        self.send_packet(IS_DATA, msg, self.proxy_address, self.data_list[key]["seq"], key)
                         self.data_list[key]["duplicate acks"] = 0
                         if key != self.last_retransmit and t.time() - self.time_last_lost > self.srtt:
                             self.cwnd /= 2
@@ -197,16 +204,24 @@ class Client1:
                             self.last_retransmit = key
                             self.time_last_lost = t.time()
                     break
+                if min(self.cwnd, self.rwnd) <= self.number_in_flight:
+                    break
 
                 # Retransmit: timeout
                 if self.packets_retransmit != {}:
                     for key in list(self.packets_retransmit.keys()):
-                        msg = "data" + delimiter + str(self.data_list[key]["data"])
-                        self.number_in_flight += 1
-                        self.send_packet(msg, self.proxy_address, self.data_list[key]["seq"])
-                        self.packets_in_flight[key] = {"seq": self.data_list[key]["seq"], "time": t.time()}
-                        self.packets_retransmit.pop(key)
-                        print("Retransmit: packet index %s" % key)
+                        if key in self.data_list:
+                            msg = "data" + delimiter + str(self.data_list[key]["data"])
+                            self.number_in_flight += 1
+                            self.send_packet(IS_DATA, msg, self.proxy_address, self.data_list[key]["seq"], key)
+                            self.packets_in_flight[key] = {"seq": self.data_list[key]["seq"], "time": t.time()}
+                            self.packets_retransmit.pop(key)
+                            print("Retransmit: packet index %s" % key)
+                            if min(self.cwnd, self.rwnd) <= self.number_in_flight:
+                                break
+
+                if min(self.cwnd, self.rwnd) <= self.number_in_flight:
+                    break
 
                 # Send data
                 if self.packet_index < self.packet_number:
@@ -214,26 +229,16 @@ class Client1:
                     self.number_in_flight += 1
                     # print("Send to proxy: Packet index %s Seq %s" % (self.packet_index, str(int(self.seq))))
                     # print(self.packets_in_flight.keys())
-                    msg = "data" + delimiter + str(self.data_list[self.packet_index]["data"])
-                    self.send_packet(msg, self.proxy_address, self.data_list[self.packet_index]["seq"])
+                    msg = "data" + delimiter + str(self.data_list[self.packet_index]["data"]) + delimiter
+                    self.send_packet(IS_DATA, msg, self.proxy_address, self.data_list[self.packet_index]["seq"], self.packet_index)
                     self.packet_index += 1
                     # print(self.packets_in_flight)
-                # Send finish
-                elif len(self.data_list) == 1 and self.packets_in_flight == {}:
-                    self.packets_in_flight["finish"] = {"seq": self.data_list["finish"]["seq"], "time": t.time()}
-                    msg = "data" + delimiter + "finish"
-                    self.send_packet(msg, self.proxy_address, self.data_list["finish"]["seq"])
-                    self.packet_index += 1
-                    print("Send finish to proxy")
                 else:
                     break
 
-                if len(self.data_list) == 1:
-                    break
-
         elif self.rwnd == 0:
-            t.sleep(1)
-            self.send_packet("data", self.proxy_address, self.seq)
+            t.sleep(0.1)
+            self.send_packet(IS_DATA, "data", self.proxy_address, self.seq, -1)
 
         # print("\nCurrent cwnd %s Packets in flight %s" % (self.cwnd, len(self.packets_in_flight)))
         # print("\nCurrent cwnd %s Packets in flight %s" % (self.cwnd, len(self.packets_in_flight)))
@@ -242,12 +247,11 @@ class Client1:
         ack = ""
         # Receive ack from proxy
         try:
-            self.sock.settimeout(self.rto)
             ack, address = self.sock.recvfrom(size)
-        except socket.timeout:
+        except:
             logging.info("The client does not receive ack from proxy")
         if ack != "":
-            pkt = Packet(0, 0, 0, 0, 0, ack)
+            pkt = Packet(0, 0, 0, 0, 0, 0, ack)
             pkt.decode_seq()
             # print(pkt.msg)
             self.number_in_flight -= 1
@@ -259,19 +263,17 @@ class Client1:
                 self.cwnd += 1.0 / self.cwnd
             # print(pkt.msg.split(delimiter)[2])
             # Receive ack of data
-            if len(self.data_list) > 1:
-                next_seq = int(pkt.msg.split(delimiter)[0])
-                self.rwnd = int(pkt.msg.split(delimiter)[1])
-                if self.number_in_flight != 0:
-                    # print(len(self.packets_in_flight))
-                    # Remove data that are ensured to be received
-
-                    for i in list(self.data_list.keys())[:-1]:
-                        if self.data_list[i]["seq"] <= next_seq - 1:
-                            self.data_list.pop(i)
+            next_seq = int(pkt.msg.split(delimiter)[0])
+            self.rwnd = int(pkt.msg.split(delimiter)[1])
+            if self.number_in_flight > -1:
+                # Remove data that are ensured to be received
+                for i in list(self.data_list.keys()):
+                    if self.data_list[i]["seq"] <= next_seq - 1:
+                        self.data_list.pop(i)
+                        # Check if the packet is in packets in flight
+                        if i in self.packets_in_flight.keys():
                             send_time = self.packets_in_flight[i]["time"]
                             self.packets_in_flight.pop(i)
-
                             # Calculate SRTT and RTO
                             receive_time = t.time()
                             rtt = receive_time - send_time
@@ -281,6 +283,8 @@ class Client1:
                                 self.srtt = rtt
                                 self.devrtt = rtt / 2
                                 self.rto = self.srtt + max(0.010, 4 * self.devrtt)
+                                self.info["RTO"] = []
+                                self.info["SRTT"] = []
                             else:
                                 alpha = 0.125
                                 beta = 0.25
@@ -289,15 +293,15 @@ class Client1:
                                 self.rto = self.srtt + max(0.010, 4 * self.devrtt)
                                 self.rto = max(self.rto, 1)  # Always round up RTO.
                                 self.rto = min(self.rto, 60)  # Maximum value 60 seconds.
+                                self.info["RTO"].append(self.rto)
+                                self.info["SRTT"].append(self.srtt)
 
-                        # Record duplicate ack
-                        elif self.data_list[i]["seq"] == next_seq:
-                            self.data_list[i]["duplicate acks"] += 1
-                            break
-
-                        # print("rto: %s \n srtt : %s" % (self.rto, self.srtt))
-            # Receive ack of finish
-            elif int(pkt.msg.split(delimiter)[0]) == self.packets_in_flight["finish"]["seq"] + 1:
+                    # Record duplicate ack
+                    elif self.data_list[i]["seq"] == next_seq:
+                        self.data_list[i]["duplicate acks"] += 1
+                        break
+            if len(self.data_list) == 0:
+                print("finish")
                 self.state_history = FIN
                 self.state = FIN
 
@@ -316,21 +320,18 @@ class Client1:
 
     # Receive result from server and four waves
     def disconnect(self):
-        connection_trails_count = 0
         while True:
             # First wave
             msg = "FIN" + delimiter + str(1)
-            self.send_packet(msg, self.server_address, -1)
+            self.send_packet(IS_FIN, msg, self.server_address, -1, -1)
             try:
-                self.sock.settimeout(2)
                 ack, address = self.sock.recvfrom(size)
             except socket.timeout:
-                self.state = CLOSED
-                break
-            pkt = Packet(0, 0, 0, 0, 0, ack)
+                continue
+            pkt = Packet(0, 0, 0, 0, 0, 0, ack)
             pkt.decode_seq()
             # Second wave
-            if not (pkt.msg.split(delimiter)[0] == "FIN ACK" and int(pkt.msg.split(delimiter)[1]) == 1 \
+            if not (pkt.msg.split(delimiter)[0] == "FIN ACK" and int(pkt.msg.split(delimiter)[1]) == 1
                     and pkt.msg.split(delimiter)[2] == "ack number" and int(pkt.msg.split(delimiter)[3]) == self.seq):
                 continue
             else:
@@ -343,31 +344,32 @@ class Client1:
                 result, address = self.sock.recvfrom(size)
             except socket.timeout:
                 self.state = CLOSED
-                print("Do not receive final result. Reconnecting...")
+                print("No such task! Do not receive final result...")
                 break
 
-            pkt = Packet(0, 0, 0, 0, 0, result)
+            pkt = Packet(0, 0, 0, 0, 0, 0, result)
             pkt.decode_seq()
             result = pkt.msg
-            print("result %s" % result)
-            if delimiter not in result:
-                print("Final result %s from %s" % (result.split("  ")[0], address))
-
+            if pkt.flag == IS_DATA and delimiter not in result:
+                print("Final result is %s" % result.split("  ")[0])
+                msg = "Result ACK" + delimiter + str(pkt.seq + 1)
+                self.send_packet(IS_ACK, msg, self.server_address, self.seq, -1)
                 try:
+                    self.sock.settimeout(10)
                     fin, address = self.sock.recvfrom(size)
                 except socket.timeout:
-                    self.sock.close()
                     print("close socket")
                     break
-                pkt = Packet(0, 0, 0, 0, 0, fin)
+                pkt = Packet(0, 0, 0, 0, 0, 0, fin)
                 pkt.decode_seq()
                 # Third wave
                 if pkt.msg.split(delimiter)[0] == "FIN" and int(pkt.msg.split(delimiter)[1]) == 1 \
                         and pkt.msg.split(delimiter)[2] == "ACK" and int(pkt.msg.split(delimiter)[3]) == 1 \
-                        and pkt.msg.split(delimiter)[4] == "ack number" and int(pkt.msg.split(delimiter)[5]) == self.seq:
+                        and pkt.msg.split(delimiter)[4] == "ack number" and int(pkt.msg.split(delimiter)[5]) + 1 == self.seq:
                     msg = "FIN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(pkt.seq + 1)
+                    print(pkt.seq)
                     # Fourth wave
-                    self.send_packet(msg, address, -1)
+                    self.send_packet(IS_FIN, msg, address, -1, -1)
                     t.sleep(0.002)
                     self.sock.close()
                     print("close socket")
@@ -376,8 +378,9 @@ class Client1:
                 continue
 
     def run(self):
+        print(t.time())
         # Connection initiation
-        count = 0
+        self.backup(self.info_file, {})
         while True:
             if self.state == CLOSED:
                 logging.info("Handshaking...")
@@ -404,6 +407,7 @@ class Client1:
                 self.receive_ack()
             elif self.state == FIN:
                 self.disconnect()
+                self.backup(self.info_file, self.info)
                 break
 
 
