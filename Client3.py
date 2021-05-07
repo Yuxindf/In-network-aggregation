@@ -37,6 +37,7 @@ logging.basicConfig(format='[%(asctime)s.%(msecs)03d] CLIENT - %(levelname)s: %(
 
 class Client3:
     def __init__(self):
+        self.time = t.time()
         self.last= 0
         self.client_id = 3
         # Client Initial State
@@ -51,7 +52,7 @@ class Client3:
         self.weight = -1  # Used for weighted average
         self.packet_number = 0  # The number of data that is used to calculate
 
-        # Server and Server address
+        # Server address
         self.server_address = (serverAddress, serverPort)
 
         # Congestion control
@@ -73,8 +74,9 @@ class Client3:
 
         self.data_list = collections.OrderedDict()
         # To draw diagrams
-        self.info = collections.OrderedDict()
         self.info_file = "./client/info.txt"
+        self.info = self.load_file(self.info_file)
+        self.info = collections.OrderedDict(self.info)#collections.OrderedDict()
 
     # Backup
     def backup(self, file, data):
@@ -82,6 +84,26 @@ class Client3:
             store = json.dumps(data)
             f.write(store)
         f.close()
+
+    def load_file(self, file):
+        with open(file, "r") as f:
+            lines = f.read()
+        f.close()
+        lines = json.loads(lines)
+        return lines
+
+    def send_packet(self, flag, msg, address, seq, index):
+        if seq == -1:
+            pkt = Packet(flag, self.job_id, self.client_id, self.seq, index, msg, 0)
+            self.seq += 1
+        else:
+            pkt = Packet(flag, self.job_id, self.client_id, seq, index, msg, 0)
+        pkt.encode_buf()
+        try:
+            self.sock.sendto(pkt.buf, address)
+        except:
+            logging.error("Fail to send packet")
+        return pkt
 
     # Three-way handshakes
     def handshake(self):
@@ -93,7 +115,7 @@ class Client3:
             # try:
             msg = "SYN" + delimiter + str(syn)
             try:
-                pkt = self.send_packet(IS_SYN, msg, self.server_address, -1, -1)
+                pkt = self.send_packet(IS_SYN, msg, self.server_address, self.seq, -1)
             except:
                 logging.error("Cannot send message")
             try:
@@ -107,19 +129,32 @@ class Client3:
                     print("\nMaximum connection trails reached, skipping request\n")
                     return
             from_server = Packet(0, 0, 0, 0, 0, 0, ack)
-            from_server.decode_seq()
+            from_server.decode_buf()
             # Third handshake
             if from_server.flag == IS_SYN and from_server.msg.split(delimiter)[0] == "ack number" \
                     and int(from_server.msg.split(delimiter)[1]) == pkt.seq + 1 \
                     and from_server.msg.split(delimiter)[2] == "SYN" and int(from_server.msg.split(delimiter)[3]) == 1\
                     and from_server.msg.split(delimiter)[4] == "ACK" and int(from_server.msg.split(delimiter)[5]) == 1:
                 msg = "SYN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(from_server.seq + 1)
-                self.send_packet(IS_SYN, msg, address, -1, -1)
+                self.send_packet(IS_SYN, msg, address, self.seq, -1)
                 if self.state_history == CLOSED:
                     self.state_history = CONNECTED
                 self.state = self.state_history
                 print("Successfully connected")
                 break
+
+    # Receive a task from server
+    def receive_task(self):
+        task = ""
+        try:
+            task, address = self.sock.recvfrom(size)
+        except:
+            logging.error("Client cannot receive task from server")
+        task = Packet(0, 0, 0, 0, 0, 0, task)
+        task.decode_buf()
+        self.job_id = int(task.msg.split(delimiter)[0])
+        self.cal_type = task.msg.split(delimiter)[1].split(" ")[0]
+        print(task.msg)
 
     def open_file(self):
         try:
@@ -160,29 +195,29 @@ class Client3:
                 self.state = CLOSED
                 break
             ack = Packet(0, 0, 0, 0, 0, 0, buf)
-            ack.decode_seq()
+            ack.decode_buf()
             if int(ack.msg) == pkt.seq + 1:
                 break
             else:
                 continue
 
-    def send_packet(self, flag, msg, address, seq, index):
-        if seq == -1:
-            pkt = Packet(flag, self.job_id, self.client_id, self.seq, index, msg, 0)
-            self.seq += 1
-        else:
-            pkt = Packet(flag, self.job_id, self.client_id, seq, index, msg, 0)
-        pkt.encode_seq()
-        try:
-            self.sock.sendto(pkt.buf, address)
-        except:
-            logging.error("Fail to send packet")
-        return pkt
-
     def send_data(self):
-        # Number of packets in flight
-        self.number_in_flight = min(max(0, self.number_in_flight), len(self.packets_in_flight))
-
+        print("\nindex %s cwnd %s rwnd%s Packets in flight %s rto %s" %
+              (self.packet_index, self.cwnd, self.rwnd, len(self.packets_in_flight),self.rto))
+        if min(self.cwnd, self.rwnd) <= self.number_in_flight:
+            print(self.number_in_flight)
+            print(len(self.data_list))
+        if len(self.packets_in_flight) == 0:
+            print(self.number_in_flight)
+        # if self.flag1 == 1:
+        #     print("111")
+        #     print(self.data_list)
+        #     self.flag1 = 0
+        # if self.flag2 == 2:
+        #     print("222")
+        #     print(self.data_list)
+        #     self.flag2 = 0
+        # print("%s %s %s" % (self.cwnd, self.rwnd, self.number_in_flight))
         # Send packets
         # print("rwnd %s cwnd %s in flight %s remaining %s" % (self.rwnd, self.cwnd, len(self.packets_in_flight), len(self.data_list)))
         if min(self.cwnd, self.rwnd) > self.number_in_flight and self.data_list != {}:
@@ -200,12 +235,15 @@ class Client3:
                             self.ssthresh /= 2
                             self.last_retransmit = key
                             self.time_last_lost = t.time()
+                            print("\nduplicate Current cwnd %s rwnd%s Packets in flight %s" % (self.cwnd, self.rwnd, len(self.packets_in_flight)))
+                            self.flag1 = 1
                     break
                 if min(self.cwnd, self.rwnd) <= self.number_in_flight:
                     break
 
                 # Retransmit: timeout
                 if self.packets_retransmit != {}:
+                    self.flag2 = 1
                     for key in list(self.packets_retransmit.keys()):
                         if key in self.data_list:
                             msg = "data" + delimiter + str(self.data_list[key]["data"])
@@ -233,12 +271,10 @@ class Client3:
                 else:
                     break
 
-        elif self.rwnd == 0:
+        elif self.rwnd <= 0:
             t.sleep(0.1)
             self.send_packet(IS_DATA, "data", self.server_address, self.seq, -1)
-
-        # print("\nCurrent cwnd %s Packets in flight %s" % (self.cwnd, len(self.packets_in_flight)))
-        # print("\nCurrent cwnd %s Packets in flight %s" % (self.cwnd, len(self.packets_in_flight)))
+            print("\nCurrent cwnd %s %s Packets in flight %s" % (self.cwnd, self.rwnd, len(self.packets_in_flight)))
 
     def receive_ack(self):
         ack = ""
@@ -247,10 +283,10 @@ class Client3:
             ack, address = self.sock.recvfrom(size)
         except:
             logging.info("The client does not receive ack from server")
+        print("%s %s"%(len(self.data_list), self.cwnd))
         if ack != "":
             pkt = Packet(0, 0, 0, 0, 0, 0, ack)
-            pkt.decode_seq()
-            # print(pkt.msg)
+            pkt.decode_buf()
             self.number_in_flight -= 1
             # Slow start
             if self.cwnd < self.ssthresh:
@@ -258,11 +294,10 @@ class Client3:
             # Congestion control
             else:
                 self.cwnd += 1.0 / self.cwnd
-            # print(pkt.msg.split(delimiter)[2])
             # Receive ack of data
             next_seq = int(pkt.msg.split(delimiter)[0])
             self.rwnd = int(pkt.msg.split(delimiter)[1])
-            if self.number_in_flight > -1:
+            if len(self.data_list) != 0:
                 # Remove data that are ensured to be received
                 for i in list(self.data_list.keys()):
                     if self.data_list[i]["seq"] <= next_seq - 1:
@@ -280,25 +315,31 @@ class Client3:
                                 self.srtt = rtt
                                 self.devrtt = rtt / 2
                                 self.rto = self.srtt + max(0.010, 4 * self.devrtt)
+                                # For test, which will be drawn in bar chart or line chart
                                 self.info["RTO"] = []
                                 self.info["SRTT"] = []
+                                self.info[self.cal_type] = []
                             else:
                                 alpha = 0.125
                                 beta = 0.25
+                                self.srtt = self.srtt + alpha * (rtt - self.srtt)
                                 self.devrtt = (1 - beta) * self.devrtt + beta * abs(rtt - self.srtt)
-                                self.srtt = (1 - alpha) * self.srtt + alpha * rtt
-                                self.rto = self.srtt + max(0.010, 4 * self.devrtt)
+                                self.rto = self.srtt + 4 * self.devrtt
                                 self.rto = max(self.rto, 1)  # Always round up RTO.
                                 self.rto = min(self.rto, 60)  # Maximum value 60 seconds.
+                                # For test, which will be drawn in bar chart or line chart
                                 self.info["RTO"].append(self.rto)
                                 self.info["SRTT"].append(self.srtt)
+                                self.info[self.cal_type].append(t.time() - self.time)
 
                     # Record duplicate ack
                     elif self.data_list[i]["seq"] == next_seq:
                         self.data_list[i]["duplicate acks"] += 1
                         break
+            # print(len(self.data_list))
             if len(self.data_list) == 0:
                 print("finish")
+                print(t.time() - self.time)
                 self.state_history = FIN
                 self.state = FIN
 
@@ -317,28 +358,24 @@ class Client3:
 
     # Receive result from server and four waves
     def disconnect(self):
-        connection_trails_count = 0
         while True:
             # First wave
             msg = "FIN" + delimiter + str(1)
-            self.send_packet(IS_FIN, msg, self.server_address, -1, -1)
-            try:
-                ack, address = self.sock.recvfrom(size)
-            except socket.timeout:
-                continue
+            self.send_packet(IS_FIN, msg, self.server_address, self.seq, -1)
+            ack, address = self.sock.recvfrom(size)
             pkt = Packet(0, 0, 0, 0, 0, 0, ack)
-            pkt.decode_seq()
+            pkt.decode_buf()
             # Second wave
-            if not (pkt.msg.split(delimiter)[0] == "FIN ACK" and int(pkt.msg.split(delimiter)[1]) == 1
-                    and pkt.msg.split(delimiter)[2] == "ack number" and int(pkt.msg.split(delimiter)[3]) == self.seq):
-                continue
-            else:
+            if pkt.msg.split(delimiter)[0] == "FIN ACK" and int(pkt.msg.split(delimiter)[1]) == 1 \
+                    and pkt.msg.split(delimiter)[2] == "ack number" and int(pkt.msg.split(delimiter)[3]) == self.seq + 1:
                 break
+            else:
+                continue
 
         # Receive final result from server
         while True:
             try:
-                self.sock.settimeout(120)
+                self.sock.settimeout(360)
                 result, address = self.sock.recvfrom(size)
             except socket.timeout:
                 self.state = CLOSED
@@ -346,10 +383,11 @@ class Client3:
                 break
 
             pkt = Packet(0, 0, 0, 0, 0, 0, result)
-            pkt.decode_seq()
+            pkt.decode_buf()
             result = pkt.msg
             if pkt.flag == IS_DATA and delimiter not in result:
                 print("Final result is %s" % result.split("  ")[0])
+                print(t.time() - self.time)
                 msg = "Result ACK" + delimiter + str(pkt.seq + 1)
                 self.send_packet(IS_ACK, msg, self.server_address, self.seq, -1)
                 try:
@@ -359,14 +397,17 @@ class Client3:
                     print("close socket")
                     break
                 pkt = Packet(0, 0, 0, 0, 0, 0, fin)
-                pkt.decode_seq()
+                pkt.decode_buf()
                 # Third wave
+                print(int(pkt.msg.split(delimiter)[5]))
+                print(self.seq)
                 if pkt.msg.split(delimiter)[0] == "FIN" and int(pkt.msg.split(delimiter)[1]) == 1 \
                         and pkt.msg.split(delimiter)[2] == "ACK" and int(pkt.msg.split(delimiter)[3]) == 1 \
-                        and pkt.msg.split(delimiter)[4] == "ack number" and int(pkt.msg.split(delimiter)[5]) + 1 == self.seq:
+                        and pkt.msg.split(delimiter)[4] == "ack number" and int(pkt.msg.split(delimiter)[5]) == self.seq:
                     msg = "FIN ACK" + delimiter + str(1) + delimiter + "ack number" + delimiter + str(pkt.seq + 1)
+                    print(pkt.seq)
                     # Fourth wave
-                    self.send_packet(IS_FIN, msg, address, -1, -1)
+                    self.send_packet(IS_FIN, msg, address, self.seq, -1)
                     t.sleep(0.002)
                     self.sock.close()
                     print("close socket")
@@ -377,19 +418,18 @@ class Client3:
     def run(self):
         print(t.time())
         # Connection initiation
-        self.backup(self.info_file, {})
+        # self.backup(self.info_file, {})
         while True:
             if self.state == CLOSED:
                 logging.info("Handshaking...")
                 self.handshake()
-                # userInput = "1 minimum test1.txt"
-                userInput = "1 average test2.txt 0.1"
+                self.receive_task()
+                # userInput = "./TestData/test1.txt"
+                userInput = "./TestData/test2.txt 0.1"
                 # userInput = input("\nInput file and Calculation type: ")
-                self.job_id = int(userInput.split(" ")[0])
-                self.cal_type = userInput.split(" ")[1]
-                self.file = userInput.split(" ")[2]
+                self.file = userInput.split(" ")[0]
                 if self.cal_type == "average":
-                    self.weight = userInput.split(" ")[3]
+                    self.weight = userInput.split(" ")[1]
 
                 # print("Requesting the %s in file %s" % (userInput.split(" ")[1], userInput.split(" ")[2]))
                 print("Requesting the %s in file %s" % (self.cal_type, self.file))
@@ -405,6 +445,7 @@ class Client3:
             elif self.state == FIN:
                 self.disconnect()
                 self.backup(self.info_file, self.info)
+                self.info[self.cal_type].append(t.time() - self.time)  # For test part, which will be drawn in a chart
                 break
 
 

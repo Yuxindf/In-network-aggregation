@@ -18,10 +18,10 @@ class Packet:
         self.buf = buf
 
     # Encode
-    def encode_seq(self):
+    def encode_buf(self):
         self.buf = struct.pack("!IIIIi100s", self.flag, self.job_id, self.client_id, self.seq, self.index, str.encode(str(self.msg).ljust(100,' ')))
 
     # Decode
-    def decode_seq(self):
+    def decode_buf(self):
         self.flag, self.job_id, self.client_id, self.seq, self.index, self.msg = struct.unpack("!IIIIi100s", self.buf)
         self.msg = self.msg.decode()

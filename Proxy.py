@@ -59,6 +59,14 @@ class Proxy:
         self.data_file = "./proxy/data.txt"
         self.cache_file = "./proxy/cache.txt"
 
+        # Load data
+        self.clients = self.load_file(self.clients_file)
+        self.data = self.load_file(self.data_file)
+        # self.cache = self.load_file(self.cache_file)
+        self.clients = collections.OrderedDict()#self.clients)
+        self.data = collections.OrderedDict()#self.data)
+        self.cache = collections.OrderedDict()#self.cache)
+
         # Client basic information
 
         # Congestion control
@@ -102,7 +110,7 @@ class Proxy:
             pkt = Packet(flag, job_id, client_id, self.seq, index, msg, 0)
         else:
             pkt = Packet(flag, job_id, client_id, seq, index, msg, 0)
-        pkt.encode_seq()
+        pkt.encode_buf()
         try:
             self.sock.sendto(pkt.buf, address)
         except:
@@ -113,17 +121,17 @@ class Proxy:
     def client_basic_info(self, info, address):
         msg = info.msg  # Client Basic Information
         # Obtain calculation type and packet number
-        client_seq = int(msg.split(delimiter)[2])
-        job_id = int(msg.split(delimiter)[3])
-        client_id = int(msg.split(delimiter)[4])
-        cal_type = msg.split(delimiter)[5]
-        packet_number = int(msg.split(delimiter)[6])
-        weight = float(msg.split(delimiter)[7])
+        client_seq = int(msg.split(delimiter)[1])
+        job_id = int(msg.split(delimiter)[2])
+        client_id = int(msg.split(delimiter)[3])
+        cal_type = msg.split(delimiter)[4]
+        packet_number = int(msg.split(delimiter)[5])
+        weight = float(msg.split(delimiter)[6])
         # Send Ack to Server
         ack = "proxy ack" + delimiter + str(client_id) + delimiter + str(info.seq + 1)
         self.send_packet(IS_ACK, job_id, 0, self.seq, ack, address, -1)
         # obtain client address
-        c = msg.split(delimiter)[1]
+        c = msg.split(delimiter)[0]
         client_address = str(c[1:-1].split(", ")[0][1:-1])
         client_port = c[1:-1].split(", ")[1]
         client_address = (client_address, int(client_port))
@@ -151,6 +159,8 @@ class Proxy:
         client_id = str(pkt.client_id)
         job_id = str(pkt.job_id)
         # Send Ack to Client
+        # print(address)
+        print("rwnd %s" % self.rwnd)
         # Receive data
         if self.rwnd > 0 and pkt.msg.split("  ")[0] != "data":
             # Initialize
@@ -198,6 +208,7 @@ class Proxy:
                         break
                 msg = str(self.clients[client_id]["next seq"]) + delimiter + str(self.rwnd)
             # Send ACK to client
+            # print(str(self.clients[client_id]["next seq"]))
             self.send_packet(IS_ACK, pkt.job_id, 0, self.seq, msg, address, -1)
             self.backup(self.clients_file, self.clients)
         # Empty packet
@@ -209,20 +220,21 @@ class Proxy:
         if client_id not in self.clients["wait fin"] \
                 and self.clients[client_id]["packet number"] == len(self.data[client_id]):
             self.clients["wait fin"][client_id] = {"job id": pkt.job_id, "time": t.time()}
-            if set(int(i) for i in self.clients["wait fin"]) == set(self.tasks[job_id]["clients"]) and not self.is_in_thread:
+            if set(int(i) for i in self.clients["wait fin"]) == set(self.tasks[job_id]["clients"]) \
+                    and not self.is_in_thread:
                 thread = threading.Thread(target=self.send_fin)
                 thread.start()
 
     def monitor_job(self):
         if "wait fin" in self.clients and self.clients["wait fin"] != {}:
-            print(self.clients["wait fin"])
+            # print(self.clients["wait fin"])
             for i in self.clients["wait fin"]:
                 # Ensure each client of the same job is iterated only once
                 if self.clients[i]["state"] != "wait":
                     continue
                 job_id = str(self.clients["wait fin"][i]["job id"])
                 if set(self.jobs[job_id]) != set(self.tasks[job_id]["clients"]):
-                    if t.time() - self.clients[j]["time"] > self.timeout:
+                    if t.time() - self.clients[i]["time"] > self.timeout:
                         for j in self.jobs[job_id]:
                             self.clients[str(j)]["state"] = "wait"
                         for k in self.cache[job_id].items():
@@ -274,6 +286,8 @@ class Proxy:
 
         clients = self.jobs[job_id]
         number = len(clients)
+        print(self.tasks)
+        print(self.jobs)
         if set(self.tasks[job_id]["clients"]) == set(self.jobs[job_id]):
             data_number = self.cache[job_id][index]
             for i in clients:
@@ -296,7 +310,7 @@ class Proxy:
                         msg = self.packets_in_flight[key]["msg"]
                         self.number_in_flight += 1
                         self.send_packet(IS_DATA, self.packets_in_flight[key]["job id"], 0,
-                                         self.packets_in_flight[key]["seq"], msg, server_address,
+                                         int(key), msg, server_address,
                                          self.packets_in_flight[key]["index"])
                         self.packets_in_flight[key]["duplicate acks"] = 0
                         self.packets_in_flight[key]["time"] = t.time()
@@ -316,7 +330,7 @@ class Proxy:
                             msg = self.packets_in_flight[key]["msg"]
                             self.number_in_flight += 1
                             self.send_packet(IS_DATA, self.packets_in_flight[key]["job id"], 0,
-                                             self.packets_in_flight[key]["seq"], msg, server_address,
+                                             int(key), msg, server_address,
                                              self.packets_in_flight[key]["index"])
                             self.packets_in_flight[key]["duplicate acks"] = 0
                             self.packets_in_flight[key]["time"] = t.time()
@@ -357,7 +371,7 @@ class Proxy:
     # self.jobs{"job_id":[],...}
     def clear_cache(self):
         self.number_in_flight = min(max(0, self.number_in_flight), len(self.packets_in_flight))
-
+        # print("clear cwnd %s server rwnd %s in flight %s" % (self.cwnd, self.server_rwnd, self.number_in_flight))
         # Send packets
         if min(self.cwnd, self.server_rwnd) > self.number_in_flight:
             while min(self.cwnd, self.server_rwnd) > self.number_in_flight:
@@ -375,9 +389,9 @@ class Proxy:
                     item = self.cache[job_id][i]
                     msg = "data" + delimiter + str(item[0]) + delimiter + str(item[1])
                     if item[1] == 1:
-                        self.send_packet(IS_DATA, int(job_id), 0, -1, msg, server_address, i)
+                        self.send_packet(IS_DATA, int(job_id), 0, -1, msg, server_address, int(i))
                     else:
-                        self.send_packet(IS_DATA, int(job_id), 0, -1, msg, server_address, i)
+                        self.send_packet(IS_DATA, int(job_id), 0, -1, msg, server_address, int(i))
                     self.cache[job_id].pop(i)
                     self.rwnd += 1
                     self.packets_in_flight[self.seq] = {"index": i, "msg": msg, "time": t.time(), "duplicate acks": 0}
@@ -436,6 +450,7 @@ class Proxy:
                     else:
                         break
 
+    # When the server receives all packets of a client from the proxy, the proxy informs the server
     def send_fin(self):
         self.is_in_thread = True
         t.sleep(0.5)
@@ -448,16 +463,19 @@ class Proxy:
                     packet_number = self.clients[i]["packet number"]
                     for j in list(self.cache[str(job_id)].keys()):
                         if int(j) < packet_number:
+                            # print("111")
+                            # print(self.cache)
                             flag = 0
                     if flag:
                         for j in self.packets_in_flight.keys():
                             if self.packets_in_flight[j]["index"] < packet_number:
+                                # print("222")
+                                # print(self.packets_in_flight)
                                 flag = 0
                     if flag:
                         seq = self.seq
                         print("Telling server receives all packets from client with id %s..." % client_id)
                         self.send_packet(IS_FIN, job_id, client_id, seq, "", server_address, -1)
-                        print("c %s" % client_id)
                         self.clients["fin"][i] = {"seq": seq, "time": t.time(), "job id": job_id}
             if self.clients["wait fin"] == {} and self.clients["fin"] == {}:
                 self.is_in_thread = False
@@ -467,22 +485,22 @@ class Proxy:
 
     def run(self):
         print("Proxy start up on %s port %s\n" % (proxyAddress, proxy_port))
-        # Load data
-        # self.clients = self.load_file(self.clients_file)
-        # self.data = self.load_file(self.data_file)
-        # self.cache = self.load_file(self.cache_file)
-        self.tasks = {"1": {"clients": [1, 2], "cal type": "average", "flag": 0}}  # collections.OrderedDict(self.tasks)
-        # self.clients = collections.OrderedDict()#self.clients)
-        # self.data = collections.OrderedDict()#self.data)
-        # self.cache = collections.OrderedDict()#self.cache)
+        self.tasks = {"1": {"clients": [1,2,5], "cal type": "min", "flag": 0}}  # collections.OrderedDict(self.tasks)
         timer = RepeatingTimer(5.0, self.monitor_job)  # For test, will change
         timer.start()
         while True:
-            if self.server_rwnd == 0:
+            if self.rwnd < 0:
                 self.clear_cache()
-            recv, address = self.sock.recvfrom(size)
+            recv = ""
+            try:
+                self.sock.settimeout(5)
+                recv, address = self.sock.recvfrom(size)
+            except socket.timeout:
+                self.monitor_job()
+            if recv == "":
+                continue
             decoded_pkt = Packet(0, 0, 0, 0, 0, 0, recv)
-            decoded_pkt.decode_seq()
+            decoded_pkt.decode_buf()
             if decoded_pkt.flag == IS_INFO:
                 self.client_basic_info(decoded_pkt, address)
             elif decoded_pkt.flag == IS_DATA:
