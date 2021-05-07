@@ -1,0 +1,1 @@
+{"1": {"clients": [1, 2], "cal type": "average", "arrived": [1]}, "2": {"clients": [1], "cal type": "average", "arrived": []}, "3": {"clients": [1, 2], "cal type": "minimum", "arrived": {}}}

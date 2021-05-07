@@ -1,6 +1,9 @@
+# Test congestion control
+# Packets of one client go through proxy
+# Draw CWND, RTO and SRTT
+
 import collections
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import json
@@ -14,39 +17,25 @@ def load_file(file):
     return lines
 
 
-# Proxy Efficiency
-# data = load_file("./EfficiencyTest.txt")
+# The value of cwnd and SSTHRESH
+# data = load_file("../client/info.txt")
 # data = collections.OrderedDict(data)
-# labels = data["labels"]
-# server = data["only server"]
-# proxy = data["add proxy"]
+# cwnd = data["cwnd"]
+# ssthresh = data["ssthresh"]
 #
-# x = np.arange(len(labels))  # the label locations
-# width = 0.35  # the width of the bars
-#
+# x = np.arange(len(cwnd))
 # fig, ax = plt.subplots()
-# rects1 = ax.bar(x - width/2, server, width, label='Only Server')
-# rects2 = ax.bar(x + width/2, proxy, width, label='Add Proxy')
-#
-# # Add some text for labels, title and custom x-axis tick labels, etc.
-# ax.set_xlabel('Packet number')
+# ax.plot(x, cwnd, label="CWND")
+# ax.plot(x, ssthresh, label="SSTHRESH", linestyle="--", color="r")
+# ax.set_xlabel('Acknowledgement Number')
 # ax.set_ylabel('Time(s)')
-# ax.set_title('Efficiency of Proxy')
-# ax.set_xticks(x)
-# ax.set_xticklabels(labels)
-# ax.legend()
-# ax.grid(True)
-#
-# ax.bar_label(rects1, padding=3)
-# ax.bar_label(rects2, padding=3)
-#
-# fig.tight_layout()
+# plt.legend()
 #
 # plt.show()
 
 
 # The value of RTO
-# data = load_file("./client/info.txt")
+# data = load_file("../client/info.txt")
 # data = collections.OrderedDict(data)
 # rto = data["RTO"]
 #
@@ -54,6 +43,7 @@ def load_file(file):
 # fig, ax = plt.subplots()
 # ax.plot(x, rto, label="RTO")
 # ax.set_xlabel('Acknowledgement Number')
+# ax.set_ylabel('Time(s)')
 # plt.legend()
 #
 # plt.show()
@@ -67,6 +57,7 @@ x = np.arange(len(srtt))
 fig, ax = plt.subplots()
 ax.plot(x, srtt, label="SRTT")
 ax.set_xlabel('Acknowledgement Number')
+ax.set_ylabel('Time(s)')
 plt.legend()
 
 plt.show()

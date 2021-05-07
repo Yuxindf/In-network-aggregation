@@ -1,9 +1,10 @@
-# Test the packets of data of two clients go through proxy
-# And that of one client's data send directly to server
+# Test Complex situation: three clients
+# (1) Target: packets of two go through proxy, one to server directly
+# (2) Contrast: packets of three clients go through proxy
+# Draw the packets received by server
 
 import collections
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import json
@@ -21,20 +22,19 @@ def load_file(file):
 data = load_file("./EfficiencyTest1-1.txt")
 data = collections.OrderedDict(data)
 labels = data["labels"]
-server = data["only server"]
-proxy = data["add proxy"]
+server = data["without proxy"]
+proxy = data["with proxy"]
 
 x = np.arange(len(labels))  # the label locations
 width = 0.35  # the width of the bars
 
 fig, ax = plt.subplots()
-rects1 = ax.bar(x - width/2, server, width, label='Only Server')
-rects2 = ax.bar(x + width/2, proxy, width, label='Add Proxy')
+rects1 = ax.bar(x - width/2, server, width, label='Without Proxy')
+rects2 = ax.bar(x + width/2, proxy, width, label='With Proxy')
 
 # Add some text for labels, title and custom x-axis tick labels, etc.
-ax.set_xlabel('Packet number')
-ax.set_ylabel('Number of Packets Received')
-ax.set_title('Comparison of Number of Packets Server received', fontsize="10")
+ax.set_xlabel('Number of Packets of Each Client')
+ax.set_ylabel('Number of Packets Received By Server')
 ax.set_xticks(x)
 ax.set_xticklabels(labels)
 ax.legend()

@@ -17,11 +17,11 @@ class Packet:
         # Buffer of encoding
         self.buf = buf
 
-    # Encode
+    # Pack header and data into buff
     def encode_buf(self):
         self.buf = struct.pack("!IIIIi100s", self.flag, self.job_id, self.client_id, self.seq, self.index, str.encode(str(self.msg).ljust(100,' ')))
 
-    # Decode
+    # Unpack header and data from buff
     def decode_buf(self):
         self.flag, self.job_id, self.client_id, self.seq, self.index, self.msg = struct.unpack("!IIIIi100s", self.buf)
         self.msg = self.msg.decode()

@@ -1,6 +1,9 @@
+# Test three kinds of calculations
+# Packets of one client go through proxy
+# Draw the time cost for three calculations
+
 import collections
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import json
@@ -24,9 +27,9 @@ maximum = data["maximum"]
 x = np.arange(len(average))
 fig, ax = plt.subplots()
 ax.set_title("Comparison of Three Calculation Types", fontsize="10")
-ax.plot(x, average, label="average", color="red")
+ax.plot(x, average, label="average", color="red",linestyle="--")
 ax.plot(x, minimum, label="minimum")
-ax.plot(x, maximum, label="maximum", color="green")
+ax.plot(x, maximum, label="maximum", color="green",linestyle=":")
 ax.set_xlabel('Acknowledgement Number')
 ax.set_ylabel('Time(s)')
 plt.legend()

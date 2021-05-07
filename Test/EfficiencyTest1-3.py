@@ -1,5 +1,7 @@
-# Test the time cost of data of three clients go through proxy
-# And that of one client's data send directly to server
+# Test Complex situation: three clients
+# (1) Target: packets of two go through proxy, one to server directly
+# (2) Contrast: packets of three clients go through proxy
+# Draw the time cost of waiting answer for clients
 
 import collections
 
@@ -28,11 +30,11 @@ x = np.arange(len(labels))  # the label locations
 width = 0.35  # the width of the bars
 
 fig, ax = plt.subplots()
-rects1 = ax.bar(x - width/2, only_to_proxy, width, label='All to Proxy')
-rects2 = ax.bar(x + width/2, also_to_server, width, label='One to Server')
+rects1 = ax.bar(x - width/2, only_to_proxy, width, label='All Packets go through Proxy')
+rects2 = ax.bar(x + width/2, also_to_server, width, label="One Client's Packets go to Server Directly ")
 
 # Add some text for labels, title and custom x-axis tick labels, etc.
-ax.set_xlabel('Packet number')
+ax.set_xlabel('Number of Packets of Each Client')
 ax.set_ylabel('Time(s)')
 ax.set_title('Efficiency of Two Situations', fontsize="10")
 ax.set_xticks(x)
